@@ -1,0 +1,21 @@
+name: Question or proposal
+description: Discuss a use case, integration or focused change before implementing it.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the workspace, resource relationship or caller workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Proposed behavior or question
+      description: Include retention, ownership and cleanup expectations where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Existing approach or alternatives

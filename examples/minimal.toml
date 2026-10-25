@@ -1,0 +1,20 @@
+# Portable repository defaults. No services or data are created implicitly.
+version = 1
+
+# Explicitly opt in to local file preparation when needed:
+# [[resources]]
+# id = "agent-context"
+# kind = "agent"
+# ownership = "owned"
+# [resources.adapter]
+# type = "file"
+# source = "AGENTS.md"
+# destination = ".treetender/AGENTS.md"
+# mode = "copy"
+
+# [[tasks]]
+# id = "build"
+# kind = "build"
+# command = ["cargo", "build", "--locked"]
+# inputs = ["Cargo.toml", "Cargo.lock", "src"]
+# outputs = ["target/debug/my-app"]
