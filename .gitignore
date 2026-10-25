@@ -3,3 +3,6 @@
 /.env
 /.env.*
 /.DS_Store
+
+# Local worktrees and their uncommitted lifecycle shims (worktree-setup)
+/scripts/worktrees/
