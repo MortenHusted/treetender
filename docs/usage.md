@@ -2,6 +2,12 @@
 
 TreeTender keeps a local registry of Git workspaces, their resource ownership and lifecycle operations. Git owns checkout metadata. External tools own supervision and backend operations.
 
+## Register existing relationships
+
+Start by declaring which resources the lane uses and calling `register`. It records associations without executing adapter commands, creating databases or adopting existing objects. Use shared/borrowed declarations when another tool manages the lifecycle. `list` and `status` expose the recorded relationships; live observations are separate evidence and may be unavailable.
+
+The current schema requires an adapter declaration, including for references. An observation wrapper around existing tooling is enough when live inspection is wanted. A database-management adapter is needed only if explicitly choosing to delegate database mutations through TreeTender. Adapter-free passive records and external receipt import are not available yet.
+
 ## Review and execute
 
 ```sh

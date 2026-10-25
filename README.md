@@ -1,6 +1,6 @@
 # TreeTender
 
-Reproducible workspace lifecycles for humans, agents and their tools.
+Resource accounting and optional lifecycles for Git workspaces.
 
 ## How this was made
 
@@ -8,9 +8,17 @@ TreeTender's initial implementation was entirely written by AI agents, driven an
 
 That is an account of how the project was built. Judge it by the code, reproducible tests and documented behavior. TreeTender is experimental, and its adapters run with your permissions.
 
-TreeTender is a Rust tool with CLI, TUI and structured agent access for preparing, building, inspecting and cleaning development workspaces. Repository-local declarations describe resources; a central registry records identity, ownership, references and partial operations.
+TreeTender records which resources belong to or are used by each Git checkout or lane: databases, storage, files, ports and services. Repository-local declarations describe those relationships; a central registry records stable identity, ownership/use, retained state and operation history. CLI, TUI and structured agent access share that accounting.
 
-Git remains responsible for repositories and worktrees. External adapters handle database namespaces, storage and service supervision. Editors, agents and tools such as Orca invoke the same commands.
+Existing tools can continue to create and operate the resources. Registering a database with a lane does not make TreeTender its database manager. Optional lifecycle integrations let TreeTender invoke existing setup/teardown commands when requested; a dedicated MySQL or PostgreSQL driver is not a prerequisite for recording an association.
+
+Git remains responsible for repositories and worktrees. Portman or another supervisor remains responsible for processes. Editors, agents and tools such as Orca use the same registry and lifecycle commands.
+
+## Register and account first
+
+`register` records checkout identity and declared resource relationships without invoking adapters, creating resources or taking over their lifecycle. Use `borrowed` or `shared` declarations for resources managed elsewhere. `list` discovers workspaces; `status` distinguishes declarations and managed receipts from live observations. A recorded association alone does not prove backend existence, health or cleanup authority.
+
+The current manifest schema still requires an adapter on each resource, including references. An observation adapter may wrap existing tooling; it needs no mutation capabilities. Accounting-only registration without any adapter, and direct import of externally issued allocation receipts, remain interface gaps. Do not interpret those gaps as a requirement to build database-management features.
 
 ## Use
 
@@ -52,7 +60,7 @@ Adapters and tasks are trusted executable code, with the user's normal permissio
 
 The initial implementation includes explicit file copy/link operations, generic JSON command adapters, dependency ordering, build/check artifacts and a read-only Portman service observer. Managed service effects use adapters with real instance/ownership proof. The Portman observer does not synchronize config, start/stop services or adopt registrations.
 
-The namespace example models database and storage lanes in disposable files. Production database/storage providers must implement the documented contract; the fixture is not a database driver. Build artifacts are observed and retained; destructive artifact cleanup requires an explicitly managed resource.
+The namespace example models database and storage lanes in disposable files. It demonstrates optional managed effects and is not a database driver. Integrations that actually create or destroy resources must implement the ownership contract; associations with externally managed resources do not grant those capabilities. Build artifacts are observed and retained; destructive artifact cleanup requires an explicitly managed resource.
 
 TreeTender is available under the [MIT License](LICENSE). There is no published binary release yet. [Product direction](docs/brief.md), [implementation contract](docs/plans/2026-10-25-implementation.md) and [research](docs/research.md) explain the design.
 

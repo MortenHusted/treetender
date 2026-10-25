@@ -28,6 +28,14 @@ flowchart TB
 
 Ownership and use are separate. A borrowed/shared reference never gains destruction rights. Another registered workspace's protected use can block the owning workspace's cleanup. Removing a checkout does not automatically remove its references or its external resource receipts.
 
+## Accounting and execution are separate
+
+The primary purpose is to account for resources attached to a tree/lane while existing tools remain responsible for their operation. A declaration records a relationship; an observation reports backend state; an allocation receipt records an explicitly managed instance. These are different kinds of evidence. Registration alone does not create an allocation receipt or authorize deletion.
+
+Use shared/borrowed references when an external tool owns the lifecycle, even when the resource is dedicated to a single lane. Such references remain useful for discovery, usage relationships and cleanup protection. They do not require a TreeTender database driver. Invoke an existing tool only for capabilities the caller actually requests.
+
+Currently every resource declaration must still name an adapter. `register` stores the declaration without invoking it; live inspection can be unavailable while the declared relationship remains recorded. A native adapter-free resource record and import of external tool receipts are not implemented. Report these as accounting-interface gaps, rather than treating backend management as mandatory.
+
 ## Lifecycle flows
 
 `inspect` discovers Git/config without adopting resources. `register` records identity and reference declarations; it does not provision databases or start services. `prepare` creates explicitly declared isolated resources. `build` and `check` run declared tasks separately. `start` and `stop` delegate verified service effects; stop retains persistent state.

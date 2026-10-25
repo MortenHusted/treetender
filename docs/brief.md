@@ -12,6 +12,7 @@ That arrangement makes relocation expensive, hides resource ownership and gives 
 
 ## Agreed direction
 
+- Make resource registration and accounting per tree/lane the core: record identities, associations, ownership/use and retained state while existing tools can retain lifecycle responsibility. Backend mutations are optional integrations, not prerequisites for accounting.
 - Build a standalone Rust product with CLI, TUI and agent access included from the beginning, sharing the same lifecycle behavior.
 - Describe workspace preparation and cleanup locally to the repository, with central discovery/registration of workspaces and their resources.
 - Support file copying, isolated persistent resources and optional setup/teardown operations; persistent resources can be database lanes, storage namespaces, volumes or user-defined state.
@@ -31,7 +32,7 @@ That arrangement makes relocation expensive, hides resource ownership and gives 
 | Concern | Intended owner |
 |---|---|
 | Repository history and worktree metadata | Git |
-| Requested workspace lifecycle and resource relationships | TreeTender |
+| Resource accounting, relationships and optional lifecycle coordination | TreeTender |
 | Process supervision and routing | Portman or another service integration |
 | Application-specific preparation and database operations | Integration commands or repository-owned tasks |
 | Credentials and secret values | Existing secret tooling; declarations reference inputs without storing values |
@@ -69,6 +70,8 @@ This scope is proposed for refinement, not a commitment to an implementation ord
 - TUI, CLI and agent callers share the same plans, effects and retention rules; build status is distinguishable from service health.
 
 ## Further adoption decisions
+
+- How to represent passive resources without a required adapter, and accept externally issued allocation receipts without taking over their lifecycle. These accounting interfaces are not implemented yet.
 
 - Which production database/storage providers should be supplied beyond the generic contract and disposable fixtures?
 - What ownership evidence should allow adopting existing live workspaces and Portman registrations?
