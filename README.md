@@ -15,7 +15,7 @@ Read the [product brief](docs/brief.md) for the agreed direction, proposed first
 ## Intended responsibilities
 
 - Prepare explicitly selected local files and configuration.
-- Provision isolated development/test database lanes.
+- Provision isolated persistent resources, such as development/test database lanes or storage namespaces.
 - Run declared workspace builds/checks and track their artifacts.
 - Coordinate service registrations and lifecycle through integrations.
 - Inspect owned resources and report what is ready, missing or inconsistent.
