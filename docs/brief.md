@@ -73,8 +73,8 @@ This scope is proposed for refinement, not a commitment to an implementation ord
 - Which production database/storage providers should be supplied beyond the generic contract and disposable fixtures?
 - What ownership evidence should allow adopting existing live workspaces and Portman registrations?
 - Which wider platforms and package distribution targets should be supported?
-- Whether and under what license to release the private project publicly.
+- Which binary/package distribution channels to support beyond the public MIT-licensed source.
 
 ## Initial exclusions
 
-The first design does not require a new process supervisor, container runtime, credential store, remote control plane, agent scheduler or automatic merge workflow. It does not authorize migration or retirement of existing tooling. No public release or open-source license has been selected.
+The first design does not require a new process supervisor, container runtime, credential store, remote control plane, agent scheduler or automatic merge workflow. It does not authorize migration or retirement of existing tooling. The source is MIT-licensed; no binary release has been published.

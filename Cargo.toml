@@ -3,6 +3,9 @@ name = "treetender"
 version = "0.1.0"
 edition = "2024"
 description = "Ownership-aware local workspace lifecycle core"
+license = "MIT"
+repository = "https://github.com/MortenHusted/treetender"
+readme = "README.md"
 publish = false
 
 [dependencies]

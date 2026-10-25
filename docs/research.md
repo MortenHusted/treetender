@@ -8,7 +8,7 @@ The [local reference mapping](reference-mapping.md) pins the inspected source co
 
 ## Lessons from existing tooling
 
-Inspection of the existing personal `worktree-setup` at commit `3bf71ea45fbc6a544e449466d4fe9fbbe59f21df` found:
+Earlier local worktree tooling motivated these requirements:
 
 - Generated shims embed both the runner path and the target repository path, although Git-based root discovery already exists.
 - Application behavior is selected partly from repository basenames and lives in central Ruby subclasses.

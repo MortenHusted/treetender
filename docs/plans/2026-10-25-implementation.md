@@ -14,7 +14,7 @@ execution: code
 
 Developers and agents can prepare, build, start, stop and explicitly clean isolated development workspaces while preserving primary and shared development resources.
 Implement one Rust application, with a local transactional registry and one policy/execution interface used by CLI, TUI and agents.
-The user authorized implementation and bounded Claude personal / Codex logpacer collaboration; existing live workspaces, profiles, services and databases remain outside the rollout.
+Implementation and agent collaboration are authorized; existing live workspaces, profiles, services and databases remain outside the rollout.
 Root coordinator owns integration, verification and delivery. Test only disposable fixtures.
 
 ## Product Contract
@@ -55,7 +55,7 @@ Root coordinator owns integration, verification and delivery. Test only disposab
 
 ### Boundaries
 
-TreeTender is not a supervisor, secret store, agent scheduler, database server or Git replacement. External scripts are trusted code: ownership checks cannot sandbox arbitrary malicious commands. No live resource adoption, legacy migration, public release or license choice is included.
+TreeTender is not a supervisor, secret store, agent scheduler, database server or Git replacement. External scripts are trusted code: ownership checks cannot sandbox arbitrary malicious commands. No live resource adoption or legacy migration is included. The source is published under MIT; binary release/distribution remains separate work.
 Git checkout creation/removal may be delegated to existing tools; resource cleanup never implicitly deletes a checkout. Provide explicit detach/forget only when ownership receipts are retained or cleaned safely.
 
 ## Planning Contract

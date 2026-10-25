@@ -2,6 +2,12 @@
 
 Reproducible workspace lifecycles for humans, agents and their tools.
 
+## How this was made
+
+TreeTender's initial implementation was entirely written by AI agents, driven and directed by [Morten Husted Lochmann](https://github.com/MortenHusted). I set the direction, define the requirements and make the product decisions. Agents write the implementation, tests and documentation, and perform reviews.
+
+That is an account of how the project was built. Judge it by the code, reproducible tests and documented behavior. TreeTender is experimental, and its adapters run with your permissions.
+
 TreeTender is a Rust tool with CLI, TUI and structured agent access for preparing, building, inspecting and cleaning development workspaces. Repository-local declarations describe resources; a central registry records identity, ownership, references and partial operations.
 
 Git remains responsible for repositories and worktrees. External adapters handle database namespaces, storage and service supervision. Editors, agents and tools such as Orca invoke the same commands.
@@ -28,6 +34,8 @@ treetender --json status
 
 See [usage](docs/usage.md), the [adapter contract](docs/adapters.md) and [examples](examples/). Put machine-specific declarations in ignored `.treetender.local.toml`. Existing live workspaces are never automatically adopted or migrated.
 
+For bugs and questions, see [support](SUPPORT.md). Read [contributing](CONTRIBUTING.md) before proposing changes and [the security policy](SECURITY.md) before reporting a vulnerability.
+
 ## Safeguards
 
 - Primary checkout resources are protected by identity, including after a branch rename.
@@ -46,7 +54,9 @@ The initial implementation includes explicit file copy/link operations, generic 
 
 The namespace example models database and storage lanes in disposable files. Production database/storage providers must implement the documented contract; the fixture is not a database driver. Build artifacts are observed and retained; destructive artifact cleanup requires an explicitly managed resource.
 
-The repository is private. No public release or license has been selected. [Product direction](docs/brief.md), [implementation contract](docs/plans/2026-10-25-implementation.md) and [research](docs/research.md) explain the design.
+TreeTender is available under the [MIT License](LICENSE). There is no published binary release yet. [Product direction](docs/brief.md), [implementation contract](docs/plans/2026-10-25-implementation.md) and [research](docs/research.md) explain the design.
+
+If you use TreeTender downstream, I would appreciate a short note in an issue or a link to what you built. This is an optional courtesy, not an additional license condition.
 
 ## Build and verify
 
