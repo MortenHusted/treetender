@@ -17,7 +17,7 @@ target/release/treetender --repo /path/to/checkout prepare
 target/release/treetender --repo /path/to/checkout prepare --apply
 ```
 
-Lifecycle commands show a plan until `--apply` is supplied. Use `plan clean --out cleanup.json` and `apply cleanup.json` to review separately. `stop --apply` retains data and checkout; `clean --keep database --apply` retains the named resource regardless of backend.
+Lifecycle commands show a plan until `--apply` is supplied. Cleanup and forgetting additionally require the reviewed fingerprint, or a saved plan: use `plan clean --keep database --out cleanup.json`, review it, then `apply cleanup.json`. The named resource is retained regardless of backend. `stop --apply` retains data and checkout.
 
 ```sh
 treetender tui
@@ -34,6 +34,7 @@ See [usage](docs/usage.md), the [adapter contract](docs/adapters.md) and [exampl
 - Shared and borrowed references never grant destruction rights; other registered users of a resource protect it too.
 - Cleanup requires an exact recorded instance and provider ownership proof. Unknown state blocks cleanup.
 - Saved plans are revalidated under a process lock. Partial effects retain provisional claims and recovery history.
+- An external provider unexpectedly reporting a prepared instance missing does not erase its allocation. Explicit `forget --only RESOURCE` plans release claims while retaining instances and audit receipts.
 - Generated files are explicit, edits are preserved, and symlink escapes are refused.
 - Build/check commands are separate from service startup; stop retains resource and port claims.
 

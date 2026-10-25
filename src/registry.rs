@@ -95,7 +95,25 @@ impl Registry {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(self.root.join("registry.lock"))?;
-        file.lock_exclusive()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => break,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        || error.kind() == std::io::ErrorKind::Interrupted =>
+                {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(Error::new(
+                            "registry_busy",
+                            "another TreeTender operation holds the registry; retry after it completes",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
         let database = self.root.join("registry.sqlite3");
         if !database.exists() {
             OpenOptions::new()
@@ -129,13 +147,6 @@ impl Guard {
             Some(body) => serde_json::from_str(&body)?,
             None => crate::manifest::Manifest::default(),
         })
-    }
-    pub fn generation(&self) -> Result<u64> {
-        Ok(self.db.query_row(
-            "SELECT value FROM metadata WHERE key='generation'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )? as u64)
     }
     pub fn bump(&self) -> Result<()> {
         self.db.execute(
@@ -295,6 +306,18 @@ impl Guard {
             .db
             .prepare("SELECT body FROM operations WHERE workspace=? ORDER BY sequence")?;
         let rows = q.query_map([id], |r| r.get::<_, String>(0))?;
-        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+        rows.map(|r| {
+            let mut record: OperationRecord = serde_json::from_str(&r?)?;
+            if record.state == "running" {
+                record.state = "interrupted".into();
+                for step in &mut record.steps {
+                    if step.state == "intent" {
+                        step.state = "uncertain".into();
+                    }
+                }
+            }
+            Ok(record)
+        })
+        .collect()
     }
 }

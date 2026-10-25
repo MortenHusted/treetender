@@ -18,6 +18,7 @@ fn action(op: Operation) -> &'static str {
         Operation::Start => "start",
         Operation::Stop => "stop",
         Operation::Clean => "destroy",
+        Operation::Forget => "forget",
     }
 }
 fn matches(selector: &str, id: &str, kind: &str) -> bool {
@@ -31,6 +32,25 @@ fn proof_matches(proof: &Proof, receipt: &Receipt) -> bool {
         && proof.owner_token.as_deref() == Some(&receipt.owner_token)
         && proof.instance.as_ref().is_some_and(|s| !s.is_empty())
         && (receipt.proof.presence != Presence::Present || proof.instance == receipt.proof.instance)
+}
+
+fn missing_external_blocks(receipt: &Receipt, operation: Operation) -> bool {
+    if receipt.state == "reserved" {
+        return false;
+    }
+    if operation == Operation::Clean && receipt.state == "destroying" {
+        return false;
+    }
+    !(matches!(operation, Operation::Prepare | Operation::Clean)
+        && receipt.state == "preparing"
+        && receipt.proof.presence != Presence::Present)
+}
+
+fn pending(receipt: &Receipt) -> bool {
+    matches!(
+        receipt.state.as_str(),
+        "intent" | "uncertain" | "preparing" | "starting" | "stopping" | "destroying"
+    )
 }
 fn prerequisite(
     w: &Workspace,
@@ -225,6 +245,7 @@ impl Engine {
         let operations = g.history(&w.id)?;
         let builds = crate::build::inspect(&w.path, &manifest.tasks, &operations);
         Ok(Status {
+            declarations: g.declarations(&w.id)?,
             resources,
             operations,
             workspace: w,
@@ -277,6 +298,9 @@ impl Engine {
         operation: Operation,
         selectors: Selectors,
     ) -> Result<Plan> {
+        if operation == Operation::Forget {
+            return self.plan_forget(g, w, selectors);
+        }
         let mut blockers = vec![];
         let checkout_current = match git::is_current(&w) {
             Ok(current) => current,
@@ -337,6 +361,11 @@ impl Engine {
         // Persisted references remain protective after a checkout disappears.
         // Re-registration explicitly refreshes the snapshot; planning never does.
         let mut reference_material = BTreeMap::new();
+        let scoped_targets: BTreeSet<_> = manifest
+            .resources
+            .iter()
+            .map(|r| adapter::target(&w, r))
+            .collect();
         if matches!(operation, Operation::Clean | Operation::Stop) {
             for other in g.workspaces()? {
                 if other.id == w.id {
@@ -344,10 +373,16 @@ impl Engine {
                 }
                 let stored = g.declarations(&other.id)?;
                 let current = self.resolved_manifest(&other)?;
-                reference_material.insert(other.id.clone(), (stored.clone(), current.clone()));
                 for r in stored.resources.iter().chain(&current.resources) {
-                    if other.primary || r.ownership != Ownership::Owned {
-                        primary_targets.insert(adapter::target(&other, r));
+                    let target = adapter::target(&other, r);
+                    if (other.primary || r.ownership != Ownership::Owned)
+                        && scoped_targets.contains(&target)
+                    {
+                        primary_targets.insert(target.clone());
+                        reference_material
+                            .entry(other.id.clone())
+                            .or_insert_with(BTreeSet::new)
+                            .insert((r.id.clone(), target));
                     }
                 }
             }
@@ -441,7 +476,6 @@ impl Engine {
             fingerprint: String::new(),
             manifest: manifest.clone(),
             observations: BTreeMap::new(),
-            registry_generation: g.generation()?,
         };
         let mut material = BTreeMap::<String, String>::new();
         if checkout_current {
@@ -458,13 +492,6 @@ impl Engine {
                 if w.path.join(name).exists() {
                     material.insert(name.into(), adapter::file_snapshot(&w.path, name)?);
                 }
-            }
-            // Primary declarations are material safety inputs even for linked checkouts.
-            if !w.primary && d.primary_path.exists() {
-                material.insert(
-                    "primary_manifest".into(),
-                    serde_json::to_string(&Manifest::load(&d.primary_path)?)?,
-                );
             }
         } else if !matches!(operation, Operation::Clean | Operation::Stop) {
             blockers.push(
@@ -510,6 +537,13 @@ impl Engine {
                     plan.exclusions.push(Exclusion {
                         id,
                         reason: reason.into(),
+                    });
+                    continue;
+                }
+                if matches!(operation, Operation::Clean | Operation::Stop) && receipt.is_none() {
+                    plan.exclusions.push(Exclusion {
+                        id,
+                        reason: "no owned allocation".into(),
                     });
                     continue;
                 }
@@ -573,6 +607,22 @@ impl Engine {
                     }
                 };
                 plan.observations.insert(id.clone(), proof.clone());
+                if proof.presence == Presence::Missing
+                    && matches!(r.adapter, Adapter::Script { .. })
+                    && receipt.is_some_and(|c| missing_external_blocks(c, operation))
+                    && matches!(operation, Operation::Prepare | Operation::Clean)
+                {
+                    let advice = if receipt.is_some_and(|c| c.state == "destroying") {
+                        "run clean to finish the interrupted destroy"
+                    } else {
+                        "verify provider context, then explicitly forget it before recreating or retiring ownership"
+                    };
+                    blockers.push(format!(
+                        "{} provider reports missing for a recorded allocation; {advice}",
+                        r.id
+                    ));
+                    continue;
+                }
                 if proof.presence == Presence::Unknown {
                     blockers.push(format!("{} provider state is unknown", r.id));
                     continue;
@@ -584,7 +634,9 @@ impl Engine {
                     continue;
                 }
                 if operation == Operation::Prepare && proof.presence == Presence::Present {
-                    if receipt.is_some_and(|c| c.state == "uncertain" || c.state == "intent") {
+                    if receipt.is_some_and(|c| {
+                        matches!(c.state.as_str(), "preparing" | "uncertain" | "intent")
+                    }) {
                         plan.steps.push(Step {
                             id: id.clone(),
                             action: operation,
@@ -613,7 +665,11 @@ impl Engine {
                     continue;
                 }
                 if matches!(operation, Operation::Start | Operation::Stop)
-                    && receipt.is_some_and(|c| c.state == "uncertain" || c.state == "intent")
+                    && receipt.is_some_and(|c| {
+                        pending(c)
+                            && !((operation == Operation::Start && c.state == "starting")
+                                || (operation == Operation::Stop && c.state == "stopping"))
+                    })
                 {
                     blockers.push(format!(
                         "{} has uncertain lifecycle state; reconcile with prepare first",
@@ -749,13 +805,112 @@ impl Engine {
             }
         }
         plan.blockers = blockers;
+        let claims = plan
+            .steps
+            .iter()
+            .map(|step| Ok((step.target.clone(), g.claim(&step.target)?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
         plan.fingerprint = adapter::digest(&serde_json::to_vec(&(
             &plan,
             &material,
             &reference_material,
+            &receipts,
+            &claims,
         ))?);
         Ok(plan)
     }
+    fn checkout_absent(&self, w: &Workspace) -> Result<bool> {
+        git::is_current(w).map(|current| !current)
+    }
+
+    fn plan_forget(&self, g: &Guard, w: Workspace, selectors: Selectors) -> Result<Plan> {
+        let receipts = g.claims(Some(&w.id))?;
+        let mut manifest = g.declarations(&w.id)?;
+        for receipt in &receipts {
+            manifest.resources.retain(|r| r.id != receipt.resource_id);
+            manifest.resources.push(receipt.declaration.clone());
+        }
+        manifest.resources.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut location_issue = None;
+        let orphaned = match self.checkout_absent(&w) {
+            Ok(orphaned) => orphaned,
+            Err(error) if error.code == "checkout_location_unknown" => {
+                location_issue = Some(error.message);
+                false
+            }
+            Err(error) => return Err(error),
+        };
+        let mut plan = Plan {
+            version: 1,
+            workspace: w.clone(),
+            operation: Operation::Forget,
+            selectors,
+            steps: vec![],
+            exclusions: vec![],
+            blockers: vec![],
+            fingerprint: String::new(),
+            manifest,
+            observations: BTreeMap::new(),
+        };
+        if let Some(issue) = location_issue {
+            plan.blockers.push(issue);
+        }
+        if w.primary {
+            plan.blockers
+                .push("primary workspace ownership records are protected".into());
+        }
+        if plan.selectors.only.is_empty() {
+            plan.blockers.push("forget requires explicit --only RESOURCE selection; instances are retained and claims/ports may be released".into());
+        }
+        for selector in plan.selectors.only.iter().chain(&plan.selectors.retain) {
+            if !plan
+                .manifest
+                .resources
+                .iter()
+                .any(|r| matches(selector, &r.id, &r.kind))
+            {
+                return Err(Error::new(
+                    "selector",
+                    format!("unknown resource selector {selector}"),
+                ));
+            }
+        }
+        for resource in &plan.manifest.resources {
+            if !selected(&plan.selectors.only, &resource.id, &resource.kind) {
+                continue;
+            }
+            if selected(&plan.selectors.retain, &resource.id, &resource.kind) {
+                plan.exclusions.push(Exclusion {
+                    id: resource.id.clone(),
+                    reason: "explicitly retained".into(),
+                });
+                continue;
+            }
+            let receipt = receipts.iter().find(|r| r.resource_id == resource.id);
+            if receipt.is_none() && (!orphaned || resource.ownership == Ownership::Owned) {
+                plan.blockers.push(format!(
+                    "{} has no owned claim; edit and re-register a live reference instead",
+                    resource.id
+                ));
+                continue;
+            }
+            plan.steps.push(Step {
+                id: resource.id.clone(),
+                action: Operation::Forget,
+                target: receipt
+                    .map(|r| r.target.clone())
+                    .unwrap_or_else(|| format!("reference:{}:{}", w.id, resource.id)),
+                destructive: false,
+            });
+            if let Some(receipt) = receipt {
+                plan.observations
+                    .insert(resource.id.clone(), receipt.proof.clone());
+            }
+        }
+        plan.fingerprint = adapter::digest(&serde_json::to_vec(&(&plan, &receipts, orphaned))?);
+        Ok(plan)
+    }
+
     fn command_material(
         &self,
         root: &Path,
@@ -798,7 +953,7 @@ impl Engine {
                 }
             }
         }
-        for arg in argv {
+        for arg in argv.iter().skip(1) {
             let path = Path::new(arg);
             let resolved = if path.is_absolute() {
                 path.to_path_buf()
@@ -854,7 +1009,14 @@ impl Engine {
             record.steps.push(JournalStep {
                 id: step.id.clone(),
                 state: "intent".into(),
-                detail: None,
+                detail: if plan.operation == Operation::Forget {
+                    Some(serde_json::to_string(&(
+                        g.claim(&step.target)?,
+                        plan.manifest.resources.iter().find(|r| r.id == step.id),
+                    ))?)
+                } else {
+                    None
+                },
             });
             g.save_operation(&record)?;
             match self.execute_step(&g, plan, step) {
@@ -873,7 +1035,7 @@ impl Engine {
                     g.save_operation(&record)?;
                     result.success = false;
                     result.failure = Some(e);
-                    result.recovery.push(format!("Inspect {} and create a fresh plan. Uncertain allocations retain their target/port claims; matching provider token can be reconciled, unknown state blocks cleanup.",step.id));
+                    result.recovery.push(format!("Inspect {} and create a fresh plan with the original selectors {}. Allocation intent and target/port claims are retained; retry the intended operation, while unknown state blocks cleanup.",step.id,serde_json::to_string(&plan.selectors)?));
                     return Ok(result);
                 }
             }
@@ -884,6 +1046,34 @@ impl Engine {
     }
     fn execute_step(&self, g: &Guard, plan: &Plan, step: &Step) -> Result<Option<String>> {
         let w = &plan.workspace;
+        if step.action == Operation::Forget {
+            let orphaned = self.checkout_absent(w)?;
+            let transaction = rusqlite::Transaction::new_unchecked(
+                &g.db,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            let receipt = g.claim(&step.target)?;
+            if let Some(receipt) = &receipt {
+                if receipt.workspace_id != w.id || receipt.resource_id != step.id {
+                    return Err(Error::new(
+                        "ownership",
+                        "claim belongs to another workspace",
+                    ));
+                }
+                g.delete_claim(&step.target)?;
+            }
+            let mut declarations = g.declarations(&w.id)?;
+            if orphaned {
+                declarations
+                    .resources
+                    .retain(|r| r.id != step.id || r.ownership == Ownership::Owned);
+                g.save_declarations(w, &declarations)?;
+            }
+            transaction.commit()?;
+            return Ok(Some(serde_json::to_string(
+                &serde_json::json!({"forgotten_receipt":receipt,"released_declaration":plan.manifest.resources.iter().find(|r|r.id == step.id),"instance_retained":true,"released_target":step.target}),
+            )?));
+        }
         if let Some(task) = plan.manifest.tasks.iter().find(|t| t.id == step.id) {
             let inputs = crate::build::input_fingerprints(&w.path, task)?;
             adapter::run(&task.command, &w.path, None, task.timeout_secs)?;
@@ -900,7 +1090,9 @@ impl Engine {
         {
             return Err(Error::new("protected", "resource is protected"));
         }
-        let mut receipt = match g.claim(&step.target)? {
+        let recorded = g.claim(&step.target)?;
+        let previously_claimed = recorded.is_some();
+        let mut receipt = match recorded {
             Some(r) => r,
             None if step.action == Operation::Prepare => Receipt {
                 resource_id: step.id.clone(),
@@ -927,6 +1119,18 @@ impl Engine {
             Some(&receipt.proof),
             &self.registry.recovery_dir,
         )?;
+        if current.presence == Presence::Missing
+            && previously_claimed
+            && missing_external_blocks(&receipt, step.action)
+            && matches!(resource.adapter, Adapter::Script { .. })
+            && matches!(step.action, Operation::Clean | Operation::Prepare)
+        {
+            return Err(Error::new(
+                "provider_missing",
+                "recorded external allocation reports missing; preserve claim and explicitly forget after verifying provider context",
+            ));
+        }
+
         if current.presence == Presence::Unknown
             || (current.presence == Presence::Present && !proof_matches(&current, &receipt))
         {
@@ -947,7 +1151,14 @@ impl Engine {
             return Ok(Some("reconciled existing exact allocation".into()));
         }
         // Allocation/ownership intent is durable before any external effect.
-        receipt.state = "uncertain".into();
+        receipt.state = match step.action {
+            Operation::Prepare => "preparing",
+            Operation::Start => "starting",
+            Operation::Stop => "stopping",
+            Operation::Clean => "destroying",
+            _ => return Err(Error::new("operation", "unexpected allocation operation")),
+        }
+        .into();
         receipt.generation += 1;
         g.save_claim(&receipt)?;
         let proof = adapter::invoke(

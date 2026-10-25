@@ -17,7 +17,12 @@ use std::{
     io::{self, IsTerminal},
     time::Duration,
 };
-use treetender::{Engine, Operation, Plan, Receipt, Selectors, Workspace};
+use treetender::{Engine, Operation, Plan, Selectors, Workspace};
+
+struct ResourceRow {
+    resource_id: String,
+    state: String,
+}
 
 struct TerminalGuard;
 impl Drop for TerminalGuard {
@@ -30,7 +35,7 @@ impl Drop for TerminalGuard {
 struct App {
     workspace: String,
     workspaces: Vec<Workspace>,
-    resources: Vec<Receipt>,
+    resources: Vec<ResourceRow>,
     cursor: usize,
     retained: BTreeSet<String>,
     plan: Option<Plan>,
@@ -59,7 +64,22 @@ impl App {
         match engine.status(&self.workspace) {
             Ok(status) => {
                 self.workspace = status.workspace.id.clone();
-                self.resources = status.resources.clone();
+                self.resources = status
+                    .resources
+                    .iter()
+                    .map(|r| ResourceRow {
+                        resource_id: r.resource_id.clone(),
+                        state: r.state.clone(),
+                    })
+                    .collect();
+                for resource in &status.declarations.resources {
+                    if !self.resources.iter().any(|r| r.resource_id == resource.id) {
+                        self.resources.push(ResourceRow {
+                            resource_id: resource.id.clone(),
+                            state: format!("{:?} declaration", resource.ownership),
+                        });
+                    }
+                }
                 self.detail = serde_json::to_string_pretty(&status)?;
             }
             Err(error) => {
@@ -102,11 +122,19 @@ impl App {
     }
 
     fn make_plan(&mut self, operation: Operation, engine: &Engine) -> Result<()> {
+        let only = if operation == Operation::Forget {
+            self.resources
+                .get(self.cursor)
+                .map(|r| vec![r.resource_id.clone()])
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
         let plan = engine.plan(
             &self.workspace,
             operation,
             Selectors {
-                only: vec![],
+                only,
                 retain: self.retained.iter().cloned().collect(),
             },
         )?;
@@ -180,6 +208,7 @@ pub fn run(engine: Engine, workspace: String) -> Result<()> {
             KeyCode::Char('4') => Some(Operation::Start),
             KeyCode::Char('5') => Some(Operation::Stop),
             KeyCode::Char('6') => Some(Operation::Clean),
+            KeyCode::Char('7') => Some(Operation::Forget),
             _ => None,
         };
         let result = if let Some(operation) = operation {
@@ -314,7 +343,7 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         middle[1],
     );
     let footer = vec![
-        Line::from("1 prepare  2 build  3 check  4 start  5 stop  6 clean"),
+        Line::from("1 prepare  2 build  3 check  4 start  5 stop  6 clean  7 forget selected"),
         Line::from("a apply reviewed plan · r register · g refresh · Esc cancel · q quit"),
         Line::from(app.message.as_str()).style(Style::default().fg(Color::Yellow)),
     ];

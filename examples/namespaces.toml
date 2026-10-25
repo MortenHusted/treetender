@@ -23,4 +23,5 @@ capabilities = ["inspect", "prepare", "destroy"]
 
 # Preparation order can be declared with depends_on on a resource or task.
 # Neither resource starts a service. Stop retains both.
-# clean --keep database --apply removes only the owned storage namespace.
+# plan clean --keep database --out cleanup.json, review, then apply cleanup.json
+# removes only the owned storage namespace.

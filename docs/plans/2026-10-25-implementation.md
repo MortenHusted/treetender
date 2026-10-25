@@ -35,7 +35,7 @@ Root coordinator owns integration, verification and delivery. Test only disposab
 - R7. Prepare never starts services; build is separate from prepare/start and tracks declared artifacts and verification outcomes.
 - R8. Small external adapters provide structured inspect/prepare/start/stop/destroy operations for database lanes, storage namespaces and custom resources; unknown provider state blocks destructive operations.
 - R9. Provide an optional Portman integration that always addresses an explicit service and never issues an empty global operation.
-- R10. Retain receipts, recovery information and adapter provenance centrally when a checkout disappears; unavailable adapters block cleanup rather than guessing.
+- R10. Retain receipts, recovery information and adapter provenance centrally when a checkout disappears; explicit non-destructive forget releases claims while retaining audited receipts, and ambiguous locations block cleanup rather than guessing.
 - R11. Port claims account for stopped workspaces; root/shared resource identities cannot be claimed by another workspace.
 
 **Interfaces and delivery**

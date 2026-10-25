@@ -17,7 +17,7 @@ treetender --repo . stop --apply
 treetender --repo . clean --keep database
 ```
 
-Lifecycle commands produce a plan until `--apply` is supplied. Preparation never starts services. Stop retains persistent data and the checkout. Cleanup is explicit and can retain any named resource, including a database, storage prefix, volume or file. Primary, shared and borrowed resources are excluded from destruction.
+Lifecycle commands produce a plan until `--apply` is supplied. Preparation never starts services. Stop retains persistent data and the checkout. Cleanup is explicit and can retain any named resource, including a database, storage prefix, volume or file. Primary, shared and borrowed resources are excluded from destruction. `clean --apply` and `forget --apply` require `--expect-fingerprint FINGERPRINT` from an earlier reviewed plan; applying a saved plan is equivalent.
 
 For a separately reviewed operation, save and apply the exact plan:
 
@@ -27,6 +27,24 @@ treetender apply cleanup.json
 ```
 
 Changed manifests, ownership or registry state can invalidate a saved plan. Generate a new plan and review its effects. Never edit a plan to bypass a blocker.
+
+Unrelated operation history does not invalidate a plan. Conflicting claims, ownership, relevant references, executable resolution or material inputs do. A busy registry returns `registry_busy` after a bounded wait; retry after the other operation completes.
+
+## Retain data while releasing ownership
+
+When a generated file is edited, a provider reports a recorded resource missing, or an uncertain instance cannot be reconciled, explicitly forget its claim without deleting the instance:
+
+```sh
+treetender plan forget --only storage --out forget.json
+# Review the released claims/ports and retained instance.
+treetender apply forget.json
+```
+
+Forget requires an explicit resource selection, preserves the complete receipt in operation history, and does not grant ownership of an existing object to a later prepare. Primary workspace records remain protected. For an absent/replaced linked checkout, select its stable ID with `--repo ID`; forget can also release its stale borrowed references. Live references are changed in the declaration and refreshed through register.
+
+## Builds and checks
+
+Task outcomes record their declared input fingerprints, task definition and output artifacts. Status reports fresh, stale, failed, interrupted or never-built outcomes. Freshness covers declared inputs and outputs; declare dependency artifacts as inputs to checks when they should invalidate prior results. It is not a guarantee about undeclared environment variables or external mutable data. Builds always run when explicitly applied; TreeTender does not silently skip them based on freshness.
 
 ## Central discovery
 
@@ -45,7 +63,7 @@ treetender --json plan prepare
 
 The CLI emits a versioned JSON envelope. Saved plans contain the core plan directly, so they can be passed back to `apply` without scraping output. Command errors return a nonzero status. A partially failed apply retains completed receipts and returns a nonzero status; inspect its result and history before retrying.
 
-The TUI uses the same core for plans and execution. Open it with `treetender tui`; use `[` and `]` to switch registered workspaces, arrow keys to select a resource, and space to retain it. Keys `1`–`6` generate lifecycle plans; `a` applies the reviewed plan, and Escape cancels it. Agent instruction files, skills and tool configuration are explicit file resources, without requiring any particular agent provider.
+The TUI uses the same core for plans and execution. Open it with `treetender tui`; use `[` and `]` to switch registered workspaces, arrow keys to select a resource, and space to retain it. Keys `1`–`6` generate lifecycle plans; `7` plans forgetting the selected resource. `a` applies the reviewed plan, and Escape cancels it. Agent instruction files, skills and tool configuration are explicit file resources, without requiring any particular agent provider.
 
 ## Configuration and trust
 

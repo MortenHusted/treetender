@@ -133,6 +133,8 @@ if os.path.exists(base+'/unknown'):
  print(json.dumps({'version':1,'proof':{'presence':'unknown'}}));sys.exit(0)
 if action!='inspect':
  with open(base+'/effects','a') as f:f.write(action+':'+rid+'\n')
+if action=='prepare' and os.path.exists(base+'/fail_before_'+rid):
+ os.unlink(base+'/fail_before_'+rid);sys.exit(17)
 if action=='prepare' and not os.path.exists(p):
  with open(p,'w') as f:json.dump({'presence':'present','instance':str(uuid.uuid4()),'owner_token':q['owner_token'],'handle':{'running':False}},f)
 if action in ['start','stop']:
@@ -143,6 +145,8 @@ if action=='destroy' and os.path.exists(p):
  with open(p) as f:v=json.load(f)
  assert v['owner_token']==q['owner_token'] and v['instance']==q['receipt']['instance']
  os.unlink(p)
+if action=='destroy' and os.path.exists(base+'/fail_destroy_'+rid):
+ os.unlink(base+'/fail_destroy_'+rid);sys.exit(18)
 if action=='prepare' and os.path.exists(base+'/fail_after_'+rid):
  os.unlink(base+'/fail_after_'+rid);sys.exit(17)
 if action=='prepare' and os.path.exists(base+'/kill_after_'+rid):
@@ -479,7 +483,7 @@ fn failure_after_effect_retains_receipt_and_retry_reconciles() {
             .find(|r| r.resource_id == "b")
             .unwrap()
             .state,
-        "uncertain"
+        "preparing"
     );
     assert_eq!(status.operations.last().unwrap().state, "failed");
     let retry = f.apply(&w, Operation::Prepare, Selectors::default());
@@ -748,8 +752,7 @@ fn process_worker() {
     };
     let plan: Plan =
         serde_json::from_slice(&fs::read(std::env::var("TT_TEST_PLAN").unwrap()).unwrap()).unwrap();
-    let engine = Engine::open(state).unwrap();
-    let result = engine.apply(&plan);
+    let result = Engine::open(state).and_then(|engine| engine.apply(&plan));
     if let Ok(out) = std::env::var("TT_TEST_OUT") {
         fs::write(
             out,
@@ -772,7 +775,7 @@ fn worker(f: &Fixture, plan: &Path, out: &Path) -> Command {
 }
 
 #[test]
-fn cross_process_apply_serializes_and_rejects_stale_generation() {
+fn cross_process_apply_serializes_and_rejects_conflicting_plans() {
     let f = Fixture::new();
     f.manifest(&f.resource("db", "data", "concurrent/{workspace_id}", &[43211]));
     let w = f.register();
@@ -788,12 +791,19 @@ fn cross_process_apply_serializes_and_rejects_stale_generation() {
     let mut b = worker(&f, &path, &out2).spawn().unwrap();
     assert!(a.wait().unwrap().success());
     assert!(b.wait().unwrap().success());
-    let mut results = vec![
+    let results = [
         fs::read_to_string(out1).unwrap(),
         fs::read_to_string(out2).unwrap(),
     ];
-    results.sort();
-    assert_eq!(results, vec!["stale_plan", "success"]);
+    assert_eq!(
+        results.iter().filter(|r| r.as_str() == "success").count(),
+        1
+    );
+    assert!(
+        results
+            .iter()
+            .any(|r| matches!(r.as_str(), "stale_plan" | "registry_busy"))
+    );
     assert_eq!(f.mutations().len(), 1);
 }
 
@@ -815,8 +825,9 @@ fn killed_caller_retains_intent_and_reconciles_exact_provider_token() {
     assert!(!status.success());
     let reopened = Engine::open(&f.state).unwrap();
     let status = reopened.status(&w.id).unwrap();
-    assert_eq!(status.resources[0].state, "uncertain");
-    assert_eq!(status.operations[0].steps[0].state, "intent");
+    assert_eq!(status.resources[0].state, "preparing");
+    assert_eq!(status.operations[0].state, "interrupted");
+    assert_eq!(status.operations[0].steps[0].state, "uncertain");
     let retry = reopened
         .plan(&w.id, Operation::Prepare, Selectors::default())
         .unwrap();
@@ -1318,7 +1329,7 @@ fn obsolete_primary_reservations_release_target_and_ports_without_forgetting_all
             .success
     );
     // Allocations with an actual/uncertain effect survive declaration removal.
-    for state in ["prepared", "uncertain", "active"] {
+    for state in ["prepared", "preparing", "active"] {
         let f = Fixture::new();
         let declaration = f.resource("db", "data", "preserved-primary", &[43221]);
         fs::write(
@@ -1327,11 +1338,11 @@ fn obsolete_primary_reservations_release_target_and_ports_without_forgetting_all
         )
         .unwrap();
         let primary = f.engine.register(&f.primary).unwrap();
-        if state == "uncertain" {
+        if state == "preparing" {
             fs::write(f.temp.path().join("fail_after_db"), "").unwrap();
         }
         let result = f.apply(&primary, Operation::Prepare, Selectors::default());
-        assert_eq!(result.success, state != "uncertain");
+        assert_eq!(result.success, state != "preparing");
         if state == "active" {
             assert!(
                 f.apply(&primary, Operation::Start, Selectors::default())
@@ -1528,4 +1539,258 @@ fn moved_checkout_with_live_git_identity_blocks_recovery_without_breaking_unrela
     let registered = f.engine.register(&moved).unwrap();
     assert_eq!(registered.id, w.id);
     assert!(treetender::git::is_current(&registered).unwrap());
+}
+
+#[test]
+fn unrelated_no_effect_operation_does_not_invalidate_reviewed_plan() {
+    let f = Fixture::new();
+    f.manifest(&f.file("context", "template", "context"));
+    let w = f.register();
+    let reviewed = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    let primary = f.engine.register(&f.primary).unwrap();
+    let unrelated = f
+        .engine
+        .plan(&primary.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    assert!(unrelated.steps.is_empty());
+    assert!(f.engine.apply(&unrelated).unwrap().success);
+    assert!(f.engine.apply(&reviewed).unwrap().success);
+    assert!(f.lane.join("context").exists());
+}
+
+#[test]
+fn busy_registry_returns_bounded_error_instead_of_hanging() {
+    use fs2::FileExt;
+    let f = Fixture::new();
+    let w = f.register();
+    let plan = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    let path = f.temp.path().join("plan.json");
+    let out = f.temp.path().join("out");
+    fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(f.state.join("registry.lock"))
+        .unwrap();
+    held.lock_exclusive().unwrap();
+    let started = std::time::Instant::now();
+    assert!(worker(&f, &path, &out).status().unwrap().success());
+    assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    assert_eq!(fs::read_to_string(out).unwrap(), "registry_busy");
+}
+
+#[test]
+fn missing_external_allocation_preserves_claim_until_reviewed_forget() {
+    let f = Fixture::new();
+    f.manifest(&f.resource("storage", "data", "retained-provider", &[]));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let original = f.proof_file("retained-provider");
+    let retained = f.temp.path().join("outside-current-provider.json");
+    fs::rename(original, &retained).unwrap();
+    let clean = f
+        .engine
+        .plan(&w.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    assert!(
+        clean
+            .blockers
+            .iter()
+            .any(|b| b.contains("explicitly forget"))
+    );
+    assert_eq!(f.engine.status(&w.id).unwrap().resources.len(), 1);
+    assert!(
+        f.apply(&w, Operation::Forget, Fixture::only("storage"))
+            .success
+    );
+    assert!(retained.exists());
+    assert!(f.engine.status(&w.id).unwrap().resources.is_empty());
+    assert!(
+        !f.mutations()
+            .iter()
+            .any(|effect| effect.starts_with("destroy:"))
+    );
+    let history = f.engine.history(&w.id).unwrap();
+    assert!(
+        history.last().unwrap().steps[0]
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("owner_token")
+    );
+}
+
+#[test]
+fn forget_edited_file_is_explicit_and_retains_its_contents() {
+    let f = Fixture::new();
+    f.manifest(&f.file("context", "template", "context"));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    fs::write(f.lane.join("context"), "user edits").unwrap();
+    assert!(
+        !f.engine
+            .plan(&w.id, Operation::Forget, Selectors::default())
+            .unwrap()
+            .blockers
+            .is_empty()
+    );
+    assert!(
+        f.apply(&w, Operation::Forget, Fixture::only("context"))
+            .success
+    );
+    assert_eq!(
+        fs::read_to_string(f.lane.join("context")).unwrap(),
+        "user edits"
+    );
+    assert!(f.engine.status(&w.id).unwrap().resources.is_empty());
+    let prepare = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    assert!(
+        !prepare.blockers.is_empty(),
+        "forgotten existing files must not be adopted by name"
+    );
+}
+
+#[test]
+fn retry_reconciles_prepare_before_effect_and_destroy_after_effect() {
+    let f = Fixture::new();
+    f.manifest(&f.resource("db", "data", "retry-intent", &[]));
+    let w = f.register();
+    fs::write(f.temp.path().join("fail_before_db"), "fail once").unwrap();
+    assert!(
+        !f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    assert_eq!(
+        f.engine.status(&w.id).unwrap().resources[0].state,
+        "preparing"
+    );
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    fs::write(f.temp.path().join("fail_destroy_db"), "fail after effect").unwrap();
+    assert!(!f.apply(&w, Operation::Clean, Selectors::default()).success);
+    assert_eq!(
+        f.engine.status(&w.id).unwrap().resources[0].state,
+        "destroying"
+    );
+    assert!(!f.proof_file("retry-intent").exists());
+    assert!(f.apply(&w, Operation::Clean, Selectors::default()).success);
+    assert!(f.engine.status(&w.id).unwrap().resources.is_empty());
+    assert_eq!(
+        f.mutations()
+            .iter()
+            .filter(|a| a.starts_with("destroy:"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn forget_rolls_back_claim_release_if_declaration_update_fails() {
+    let f = Fixture::new();
+    f.manifest(&f.resource("db", "data", "atomic-forget", &[43225]));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    git(
+        &f.primary,
+        &["worktree", "remove", "--force", f.lane.to_str().unwrap()],
+    );
+    let plan = f
+        .engine
+        .plan(&w.id, Operation::Forget, Fixture::only("db"))
+        .unwrap();
+    let db = rusqlite::Connection::open(f.state.join("registry.sqlite3")).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_reference_update BEFORE UPDATE ON declarations BEGIN SELECT RAISE(ABORT, 'fixture abort'); END;").unwrap();
+    let result = f.engine.apply(&plan).unwrap();
+    assert!(!result.success);
+    assert_eq!(f.engine.status(&w.id).unwrap().resources.len(), 1);
+    assert!(f.proof_file("atomic-forget").exists());
+    db.execute_batch("DROP TRIGGER fail_reference_update;")
+        .unwrap();
+    assert!(f.apply(&w, Operation::Forget, Fixture::only("db")).success);
+    assert!(f.proof_file("atomic-forget").exists());
+}
+
+#[test]
+fn forget_cannot_release_a_moved_workspace_with_live_git_metadata() {
+    let f = Fixture::new();
+    f.manifest(&f.file("context", "template", "context"));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let moved = f.temp.path().join("moved-outside-git");
+    fs::rename(&f.lane, &moved).unwrap();
+    let plan = f
+        .engine
+        .plan(&w.id, Operation::Forget, Fixture::only("context"))
+        .unwrap();
+    assert!(
+        plan.blockers
+            .iter()
+            .any(|b| b.contains("Git identity is still live"))
+    );
+    assert_eq!(f.engine.apply(&plan).unwrap_err().code, "plan_blocked");
+    assert!(moved.join("context").exists());
+    assert_eq!(f.engine.status(&w.id).unwrap().resources.len(), 1);
+}
+
+#[test]
+fn repository_environment_is_scrubbed_while_authentication_context_is_preserved() {
+    let mut command = Command::new("/bin/sh");
+    command.args([
+        "-c",
+        "test -z \"$GIT_DIR\" && test \"$GIT_SSH_COMMAND\" = fixture-auth",
+    ]);
+    command
+        .env("GIT_DIR", "foreign-repo")
+        .env("GIT_SSH_COMMAND", "fixture-auth");
+    treetender::git::clean_environment(&mut command);
+    assert!(command.status().unwrap().success());
+}
+
+#[test]
+fn moving_the_whole_repository_never_implies_its_workspaces_are_retired() {
+    let f = Fixture::new();
+    f.manifest(&f.resource("db", "data", "whole-repository-move", &[]));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    fs::rename(&f.primary, f.temp.path().join("moved-repository")).unwrap();
+    for operation in [Operation::Clean, Operation::Forget] {
+        let plan = f
+            .engine
+            .plan(&w.id, operation, Fixture::only("db"))
+            .unwrap();
+        assert!(
+            plan.blockers
+                .iter()
+                .any(|b| b.contains("repository location or identity"))
+        );
+        assert_eq!(f.engine.apply(&plan).unwrap_err().code, "plan_blocked");
+    }
+    assert!(f.proof_file("whole-repository-move").exists());
+    assert_eq!(f.engine.status(&w.id).unwrap().resources.len(), 1);
 }

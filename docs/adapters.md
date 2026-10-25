@@ -65,6 +65,10 @@ Unsupported capabilities, unavailable inspection and ownership mismatches block 
 
 The `namespace_adapter` Rust example models independent database/storage namespaces in disposable files. Build it with `cargo build --example namespace_adapter`, set `TREETENDER_DEMO_ROOT` to a disposable directory, and put its binary on PATH. `examples/namespaces.toml` exercises generic retain/clean policy. This fixture is not a PostgreSQL client or a production storage adapter.
 
+Inspection requests deliberately omit the expected owner token and instance from the prior proof. The prior handle remains available as a locator; the provider must return independently stored ownership evidence. Handles must be deterministic locators, without volatile timestamps, PIDs or health counters that would invalidate every reviewed plan. A changed owner/instance or unknown provider state blocks effects.
+
+An external provider unexpectedly reporting a previously prepared allocation missing preserves its claim. Verify the provider account/endpoint/context before explicitly forgetting it. Intent-specific receipts allow retry after prepare failed before creation or after an intended destroy took effect. Forget retains the backend instance and an audited copy of the receipt; it is not resource destruction.
+
 ## Files and agent context
 
 ```toml

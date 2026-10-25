@@ -58,6 +58,8 @@ pub enum Command {
     Stop(Action),
     /// Plan resource cleanup; --apply removes only verified owned selections.
     Clean(Action),
+    /// Plan non-destructive release of explicit claims/ports; instances remain.
+    Forget(Action),
     /// Browse workspaces, review plans and apply them through the same policy.
     Tui,
     /// Discover machine interfaces and agent-readable resources.
@@ -75,6 +77,7 @@ pub enum Lifecycle {
     Start,
     Stop,
     Clean,
+    Forget,
 }
 
 impl Lifecycle {
@@ -86,6 +89,7 @@ impl Lifecycle {
             Self::Start => "start",
             Self::Stop => "stop",
             Self::Clean => "clean",
+            Self::Forget => "forget",
         }
     }
 }
@@ -107,6 +111,9 @@ pub struct Action {
     /// Execute the displayed operation. Without this flag, only plan.
     #[arg(long)]
     pub apply: bool,
+    /// Required for clean/forget --apply: fingerprint of the plan you reviewed.
+    #[arg(long)]
+    pub expect_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

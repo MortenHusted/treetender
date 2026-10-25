@@ -197,6 +197,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Clean(action) => {
             return action_run(&engine, &workspace, Lifecycle::Clean, action, cli.json);
         }
+        Command::Forget(action) => {
+            return action_run(&engine, &workspace, Lifecycle::Forget, action, cli.json);
+        }
         Command::Tui => {
             if cli.json {
                 bail!("the TUI requires a terminal; use status/plan/apply with --json for agents");
@@ -217,6 +220,22 @@ fn action_run(
 ) -> Result<()> {
     let plan = engine.plan(workspace, operation.into(), action.selection.into())?;
     if action.apply {
+        if action
+            .expect_fingerprint
+            .as_ref()
+            .is_some_and(|expected| expected != &plan.fingerprint)
+        {
+            return Err(treetender::Error::new(
+                "stale_plan",
+                "the reviewed fingerprint differs from the current plan; review a new plan",
+            )
+            .into());
+        }
+        if matches!(operation, Lifecycle::Clean | Lifecycle::Forget)
+            && action.expect_fingerprint.as_deref() != Some(&plan.fingerprint)
+        {
+            return Err(treetender::Error::new("review_required","review a plan first; use apply FILE, or repeat the command with --apply --expect-fingerprint FINGERPRINT").into());
+        }
         apply(engine, &plan, structured)
     } else {
         output_plan(&plan, structured)
@@ -257,7 +276,10 @@ fn output_plan(plan: &Plan, structured: bool) -> Result<()> {
         plan.exclusions.len(),
         plan.blockers.len()
     );
-    println!("Plan only. Use --apply on the lifecycle command, or apply a saved plan.");
+    println!("Fingerprint: {}", plan.fingerprint);
+    println!(
+        "Plan only. Apply a saved plan, or repeat clean/forget with --apply --expect-fingerprint FINGERPRINT."
+    );
     Ok(())
 }
 
@@ -314,6 +336,7 @@ impl From<Lifecycle> for Operation {
             Lifecycle::Start => Self::Start,
             Lifecycle::Stop => Self::Stop,
             Lifecycle::Clean => Self::Clean,
+            Lifecycle::Forget => Self::Forget,
         }
     }
 }
@@ -335,22 +358,24 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             "global_flags":["--repo PATH","--state-dir PATH","--json"],
             "read_commands":["inspect","status","list","history","plan OP","agent schema","agent resources","agent read URI"],
             "write_commands":["init","register","apply FILE","OP --apply"],
-            "operations":["prepare","build","check","start","stop","clean"],
+            "operations":["prepare","build","check","start","stop","clean","forget"],
             "selectors":{"only":"repeat --only RESOURCE_OR_TASK","retain":"repeat --keep RESOURCE"},
             "workflow":["inspect","register explicitly","plan OP --out plan.json","review blockers, effects and exclusions","apply plan.json"],
-            "safety":{"stop":"retain checkout and persistent data","clean":"verified owned selections only; primary/shared/borrowed excluded","force_bypass":false,"scripts":"trusted executable code; not sandboxed"},
+            "safety":{"stop":"retain checkout and persistent data","clean":"verified owned selections only; reviewed fingerprint required for --apply","forget":"explicit --only resources; release claims/ports while retaining instances and audit receipts","primary":"protected","force_bypass":false,"scripts":"trusted executable code; not sandboxed"},
             "resources":"agent resources",
             "adapter_contract":"treetender://adapter"
         })),
         AgentCommand::Resources => Ok(json!([
             {"uri":"treetender://lifecycle","title":"Lifecycle and ownership","mime_type":"text/markdown"},
             {"uri":"treetender://adapter","title":"External adapter protocol","mime_type":"text/markdown"},
+            {"uri":"treetender://registry","title":"Registry and resource relationships","mime_type":"text/markdown"},
             {"uri":"treetender://manifest","title":"Minimal portable manifest","mime_type":"text/plain"}
         ])),
         AgentCommand::Read { uri } => {
             let text = match uri.as_str() {
                 "treetender://lifecycle" => include_str!("../docs/usage.md"),
                 "treetender://adapter" => include_str!("../docs/adapters.md"),
+                "treetender://registry" => include_str!("../docs/registry.md"),
                 "treetender://manifest" => include_str!("../examples/minimal.toml"),
                 _ => bail!(
                     "unknown resource URI {uri}; discover available URIs with agent resources"

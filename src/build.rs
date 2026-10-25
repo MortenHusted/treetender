@@ -71,7 +71,7 @@ pub(crate) fn inspect(
         let Some((operation,step)) = attempt else { return status; };
         status.operation_id = Some(operation.id.clone());
         if step.state != "completed" {
-            status.state = if operation.state == "running" { BuildState::Interrupted } else { BuildState::Failed };
+            status.state = if matches!(operation.state.as_str(),"running"|"interrupted") { BuildState::Interrupted } else { BuildState::Failed };
             status.reason = step.detail.clone().unwrap_or_else(||"The last task attempt did not complete".into());
             return status;
         }

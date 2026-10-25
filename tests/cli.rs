@@ -96,6 +96,26 @@ outputs = ["artifacts/app"]
         );
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["result"].clone()
     }
+    fn reviewed_call(&self, path: &Path, args: &[&str]) -> Output {
+        let plan = self.ok(path, args);
+        let mut command = args.to_vec();
+        command.extend([
+            "--apply",
+            "--expect-fingerprint",
+            plan["fingerprint"].as_str().unwrap(),
+        ]);
+        self.call(path, &command)
+    }
+    fn reviewed(&self, path: &Path, args: &[&str]) -> Value {
+        let output = self.reviewed_call(path, args);
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["result"].clone()
+    }
 }
 
 fn git(path: &Path, args: &[&str]) {
@@ -203,11 +223,14 @@ fn full_cli_flow_retains_on_stop_and_protects_primary_on_clean() {
     assert_eq!(status["builds"][0]["state"], "stale");
     fixture.ok(&fixture.lane, &["stop", "--apply"]);
     assert!(fixture.lane.join("generated/AGENTS.md").exists());
-    fixture.ok(&fixture.lane, &["clean", "--keep", "context", "--apply"]);
+    fixture.reviewed(&fixture.lane, &["clean", "--keep", "context"]);
     assert!(fixture.lane.join("generated/AGENTS.md").exists());
-    fixture.ok(&fixture.lane, &["clean", "--apply"]);
+    let unreviewed = fixture.call(&fixture.lane, &["clean", "--apply"]);
+    assert!(!unreviewed.status.success());
+    assert!(fixture.lane.join("generated/AGENTS.md").exists());
+    fixture.reviewed(&fixture.lane, &["clean"]);
     assert!(!fixture.lane.join("generated/AGENTS.md").exists());
-    fixture.ok(&fixture.primary, &["clean", "--apply"]);
+    fixture.reviewed(&fixture.primary, &["clean"]);
     assert!(fixture.primary.join("generated/AGENTS.md").exists());
     assert_eq!(
         fs::read_to_string(fixture.primary.join("README.md")).unwrap(),
@@ -232,7 +255,7 @@ fn saved_plan_refuses_changed_inputs_and_preserves_edited_output() {
     assert!(!fixture.lane.join("generated/AGENTS.md").exists());
     fixture.ok(&fixture.lane, &["prepare", "--apply"]);
     fs::write(fixture.lane.join("generated/AGENTS.md"), "user edits").unwrap();
-    let _ = fixture.call(&fixture.lane, &["clean", "--apply"]);
+    let _ = fixture.reviewed_call(&fixture.lane, &["clean"]);
     assert_eq!(
         fs::read_to_string(fixture.lane.join("generated/AGENTS.md")).unwrap(),
         "user edits"

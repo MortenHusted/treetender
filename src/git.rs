@@ -10,10 +10,26 @@ pub struct Discovery {
     pub primary_path: PathBuf,
 }
 pub fn clean_environment(command: &mut Command) {
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(key);
-        }
+    for key in [
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    ] {
+        command.env_remove(key);
     }
 }
 fn git(path: &Path, args: &[&str]) -> Result<String> {
@@ -86,6 +102,14 @@ fn bare_layout() -> Error {
 /// live old Git metadata is ambiguous (possibly moved), so it returns an error.
 /// Unsafe paths also return errors instead of proving disappearance.
 pub fn is_current(workspace: &Workspace) -> Result<bool> {
+    if !safe_directory_exists(&workspace.common_dir)?
+        || identity(&workspace.common_dir, false)?.as_deref() != Some(&workspace.repository_id)
+    {
+        return Err(Error::new(
+            "checkout_location_unknown",
+            "repository location or identity is unavailable; it may have moved or been deleted; repair and register the repository at its current location before cleanup or releasing references",
+        ));
+    }
     let path_exists = safe_directory_exists(&workspace.path)?;
     if !safe_directory_exists(&workspace.git_dir)?
         || identity(&workspace.git_dir, false)?.as_deref() != Some(&workspace.id)

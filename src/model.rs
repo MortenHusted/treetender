@@ -77,6 +77,7 @@ pub enum Operation {
     Start,
     Stop,
     Clean,
+    Forget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -158,7 +159,6 @@ pub struct Plan {
     pub fingerprint: String,
     pub manifest: crate::manifest::Manifest,
     pub observations: std::collections::BTreeMap<String, Proof>,
-    pub registry_generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +193,7 @@ pub struct Status {
     pub observations: std::collections::BTreeMap<String, Proof>,
     pub issues: Vec<String>,
     pub builds: Vec<crate::build::BuildStatus>,
+    pub declarations: crate::manifest::Manifest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
