@@ -6,7 +6,9 @@ TreeTender keeps a local registry of Git workspaces, their resource ownership an
 
 Start by declaring which resources the lane uses and calling `register`. It records associations without executing adapter commands, creating databases or adopting existing objects. Use shared/borrowed declarations when another tool manages the lifecycle. `list` and `status` expose the recorded relationships; live observations are separate evidence and may be unavailable.
 
-The current schema requires an adapter declaration, including for references. An observation wrapper around existing tooling is enough when live inspection is wanted. A database-management adapter is needed only if explicitly choosing to delegate database mutations through TreeTender. Adapter-free passive records and external receipt import are not available yet.
+For accounting only, omit `adapter` and provide `id`, `kind` and `target`. Optional `description` records purpose and `manager` identifies the responsible tool/person. `target` supports stable workspace/repository placeholders; ports on passive declarations are informational. Use [the inventory example](../examples/inventory.toml) as a starting point. `register` updates the snapshot; it never invokes a passive resource. CLI/TUI label these entries passive and JSON lists them in `declarations`, without allocation receipts or observations.
+
+Passive resources are excluded from prepare/start/stop/cleanup regardless of ownership mode. Passive-only dependency graphs are accounting relationships; operations requiring an actually ready prerequisite need an observer and block without one. A retained passive dependent can block deletion of its parent. Update live associations by editing the manifest and registering again; registered associations survive checkout disappearance until explicitly forgotten. Existing managed receipts survive removing an adapter and require deliberate reconciliation. External receipt import remains unavailable.
 
 ## Review and execute
 

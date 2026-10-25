@@ -112,6 +112,20 @@ fn run(cli: Cli) -> Result<()> {
                         receipt.target
                     );
                 }
+                for resource in &status.declarations.resources {
+                    if resource.is_passive() {
+                        println!(
+                            "  {} · passive · {:?} · {}",
+                            resource.id, resource.ownership, resource.target
+                        );
+                        if let Some(description) = &resource.description {
+                            println!("    purpose: {description}");
+                        }
+                        if let Some(manager) = &resource.manager {
+                            println!("    manager: {manager}");
+                        }
+                    }
+                }
                 for (id, proof) in &status.observations {
                     println!("  observed {id}: {:?}", proof.presence);
                 }
@@ -359,6 +373,11 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             "read_commands":["inspect","status","list","history","plan OP","agent schema","agent resources","agent read URI"],
             "write_commands":["init","register","apply FILE","OP --apply"],
             "operations":["prepare","build","check","start","stop","clean","forget"],
+            "resource_registration":{
+                "passive":{"adapter":"omit","required":["id","kind","target"],"kinds":["file","data","service","agent","custom"],"optional":["ownership","depends_on","ports","description","manager"],"live_observation":false,"allocation_claim":false,"lifecycle_authority":false},
+                "managed":{"adapter":"explicit configuration","allocation_proof":"required for effects"},
+                "refresh":"edit declarations and register again; orphaned references can be explicitly forgotten"
+            },
             "selectors":{"only":"repeat --only RESOURCE_OR_TASK","retain":"repeat --keep RESOURCE"},
             "workflow":["inspect","register explicitly","plan OP --out plan.json","review blockers, effects and exclusions","apply plan.json"],
             "safety":{"stop":"retain checkout and persistent data","clean":"verified owned selections only; reviewed fingerprint required for --apply","forget":"explicit --only resources; release claims/ports while retaining instances and audit receipts","primary":"protected","force_bypass":false,"scripts":"trusted executable code; not sandboxed"},
@@ -369,7 +388,8 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             {"uri":"treetender://lifecycle","title":"Lifecycle and ownership","mime_type":"text/markdown"},
             {"uri":"treetender://adapter","title":"External adapter protocol","mime_type":"text/markdown"},
             {"uri":"treetender://registry","title":"Registry and resource relationships","mime_type":"text/markdown"},
-            {"uri":"treetender://manifest","title":"Minimal portable manifest","mime_type":"text/plain"}
+            {"uri":"treetender://manifest","title":"Minimal portable manifest","mime_type":"text/plain"},
+            {"uri":"treetender://inventory","title":"Passive resource inventory example","mime_type":"text/plain"}
         ])),
         AgentCommand::Read { uri } => {
             let text = match uri.as_str() {
@@ -377,6 +397,7 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
                 "treetender://adapter" => include_str!("../docs/adapters.md"),
                 "treetender://registry" => include_str!("../docs/registry.md"),
                 "treetender://manifest" => include_str!("../examples/minimal.toml"),
+                "treetender://inventory" => include_str!("../examples/inventory.toml"),
                 _ => bail!(
                     "unknown resource URI {uri}; discover available URIs with agent resources"
                 ),

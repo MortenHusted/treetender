@@ -2,7 +2,7 @@
 
 Adapters connect existing tools to optional observation and lifecycle capabilities. TreeTender's resource registry accounts for lane associations independently of invoking those capabilities. A new database driver is not required merely to register an externally managed database.
 
-The current schema requires an adapter declaration even on shared/borrowed references. Registration stores it without execution; only subsequent observation or explicitly requested effects invoke it. Use observation-only capabilities when the existing tool retains lifecycle responsibility. Adapter-free records and external receipt import are not yet implemented.
+Omit `adapter` to declare a passive resource: no command or connection is attempted, no allocation/port claim is created, and lifecycle effects exclude it. An explicit nonempty `target` is required; `description` and `manager` are optional informational notes. All ownership modes remain protected without an adapter. See the [inventory example](../examples/inventory.toml) and [registry semantics](registry.md). An observation adapter is optional when actual backend evidence is wanted. External receipt import is not implemented.
 
 TreeTender delegates backend operations through versioned JSON requests over stdin and responses over stdout. Commands are argv arrays executed directly; shell execution requires explicitly selecting a shell. Adapter declarations are trusted executable code.
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add adapter-free passive resource declarations with purpose/manager notes, CLI/TUI accounting and agent discovery. Passive references never allocate, observe or mutate backend resources and remain protective during cleanup.
+
 - Initial Rust CLI, TUI and structured agent interface.
 - Central registry for Git identities, resource ownership, protected references and operation history.
 - Explicit file copy/link resources and versioned JSON adapters for user-provided backends.

@@ -73,10 +73,22 @@ impl App {
                     })
                     .collect();
                 for resource in &status.declarations.resources {
-                    if !self.resources.iter().any(|r| r.resource_id == resource.id) {
+                    if let Some(row) = self
+                        .resources
+                        .iter_mut()
+                        .find(|r| r.resource_id == resource.id)
+                    {
+                        if resource.is_passive() {
+                            row.state = format!("passive; retained {} receipt", row.state);
+                        }
+                    } else {
                         self.resources.push(ResourceRow {
                             resource_id: resource.id.clone(),
-                            state: format!("{:?} declaration", resource.ownership),
+                            state: if resource.is_passive() {
+                                "passive · declared only".into()
+                            } else {
+                                format!("{:?} declaration", resource.ownership)
+                            },
                         });
                     }
                 }
@@ -359,6 +371,48 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn passive_inventory_renders_without_allocations_or_observations() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let initialized = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&repo)
+            .status()
+            .unwrap();
+        assert!(initialized.success());
+        std::fs::write(
+            repo.join("treetender.toml"),
+            include_str!("../examples/inventory.toml"),
+        )
+        .unwrap();
+        let engine = Engine::open(temp.path().join("state")).unwrap();
+        let workspace = engine.register(&repo).unwrap();
+        let mut app = App::new(workspace.id);
+        app.refresh(&engine).unwrap();
+        assert_eq!(app.resources.len(), 2);
+        assert!(
+            app.resources
+                .iter()
+                .all(|row| row.state.contains("passive"))
+        );
+        let mut terminal = Terminal::new(TestBackend::new(130, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("database-server"));
+        assert!(text.contains("passive"));
+        let status = engine.status(&app.workspace).unwrap();
+        assert!(status.observations.is_empty());
+        assert!(status.resources.is_empty());
+    }
 
     #[test]
     fn blocked_plan_is_visible_and_can_be_cancelled_without_effects() {
