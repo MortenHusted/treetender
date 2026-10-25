@@ -126,6 +126,7 @@ const PROVIDER: &str = r#"import sys,json,os,hashlib,uuid,signal
 q=json.load(sys.stdin)
 base=os.path.dirname(os.path.abspath(__file__))
 os.makedirs(base+'/instances',exist_ok=True)
+with open(base+'/requests','a') as f:json.dump(dict(q,_cwd=os.getcwd()),f);f.write('\n')
 p=base+'/instances/'+hashlib.sha256(q['target'].encode()).hexdigest()+'.json'
 action=q['action']; rid=q['resource_id']
 if os.path.exists(base+'/unknown'):
@@ -367,10 +368,8 @@ fn linked_cannot_claim_primary_target_and_late_primary_declaration_blocks_cleanu
             .blockers
             .is_empty()
     );
-    assert_eq!(
-        f.engine.register(&f.primary).unwrap_err().code,
-        "ownership_conflict"
-    );
+    // A protected reference is not an exclusive allocation claim.
+    assert!(f.engine.register(&f.primary).unwrap().primary);
     assert!(f.proof_file("late-primary-db").exists());
 }
 
@@ -655,6 +654,7 @@ fn checkout_removal_keeps_external_provenance_and_receipt_cleanup() {
             .success
     );
     fs::remove_dir_all(&f.lane).unwrap();
+    git(&f.primary, &["worktree", "prune", "--expire", "now"]);
     assert_eq!(f.engine.status(&w.id).unwrap().resources.len(), 1);
     let p = f
         .engine
@@ -862,6 +862,7 @@ fn registered_borrowed_reference_protects_another_workspaces_allocation() {
             .is_empty()
     );
     fs::remove_dir_all(&other_path).unwrap();
+    git(&f.primary, &["worktree", "prune", "--expire", "now"]);
     assert!(
         !f.engine
             .plan(&owner.id, Operation::Clean, Selectors::default())
@@ -935,4 +936,596 @@ fn distinct_clones_do_not_share_repository_identity() {
     let second = f.engine.register(&clone).unwrap();
     assert_ne!(original.repository_id, second.repository_id);
     assert!(second.primary);
+}
+
+fn recycle_lane(f: &Fixture) {
+    git(
+        &f.primary,
+        &["worktree", "remove", "--force", f.lane.to_str().unwrap()],
+    );
+    git(
+        &f.primary,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "replacement",
+            f.lane.to_str().unwrap(),
+        ],
+    );
+}
+
+#[test]
+fn recycled_path_resolves_marker_and_old_receipts_never_touch_new_files() {
+    let f = Fixture::new();
+    let declaration = f.file("context", "template", "context")
+        + &f.resource("db", "data", "recycled-fixed-target", &[]);
+    f.manifest(&declaration);
+    let old = f.register();
+    assert!(
+        f.apply(&old, Operation::Prepare, Selectors::default())
+            .success
+    );
+    recycle_lane(&f);
+    f.manifest(&declaration);
+    fs::write(f.lane.join("context"), "replacement checkout file").unwrap();
+    assert!(!treetender::git::is_current(&old).unwrap());
+    assert!(f.engine.inspect(&f.lane).unwrap().workspace.is_none());
+    assert_eq!(
+        f.engine
+            .plan(
+                f.lane.to_str().unwrap(),
+                Operation::Prepare,
+                Selectors::default()
+            )
+            .unwrap_err()
+            .code,
+        "unregistered"
+    );
+    let new = f.register();
+    assert_ne!(old.id, new.id);
+    assert!(treetender::git::is_current(&new).unwrap());
+    assert_eq!(
+        f.engine.inspect(&f.lane).unwrap().workspace.unwrap().id,
+        new.id
+    );
+    assert_eq!(
+        f.engine
+            .plan(
+                f.lane.to_str().unwrap(),
+                Operation::Prepare,
+                Selectors::default()
+            )
+            .unwrap()
+            .workspace
+            .id,
+        new.id
+    );
+    assert!(
+        f.engine
+            .status(&new.id)
+            .unwrap()
+            .issues
+            .iter()
+            .any(|s| s.contains(&old.id))
+    );
+    let old_clean = f
+        .engine
+        .plan(&old.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    assert!(old_clean.blockers.is_empty(), "{:?}", old_clean.blockers);
+    assert!(f.engine.apply(&old_clean).unwrap().success);
+    assert_eq!(
+        fs::read_to_string(f.lane.join("context")).unwrap(),
+        "replacement checkout file"
+    );
+    assert!(!f.proof_file("recycled-fixed-target").exists());
+    assert!(f.engine.status(&old.id).unwrap().resources.is_empty());
+    assert!(
+        f.apply(&new, Operation::Prepare, Fixture::only("db"))
+            .success
+    );
+    let requests = fs::read_to_string(f.temp.path().join("requests")).unwrap();
+    for request in requests
+        .lines()
+        .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
+        .filter(|r| r["workspace"]["id"] == old.id && r["action"] == "destroy")
+    {
+        assert_eq!(request["workspace"]["path"], old.path.to_str().unwrap());
+        assert_eq!(
+            Path::new(request["_cwd"].as_str().unwrap()),
+            f.state.canonicalize().unwrap().join("adapter-recovery")
+        );
+    }
+}
+
+#[test]
+fn stale_record_blocks_replacement_local_scripts_and_absolute_checkout_args() {
+    let f = Fixture::new();
+    let local = f.lane.join("local.py");
+    fs::write(
+        &local,
+        format!(
+            "import runpy\nrunpy.run_path({:?},run_name='__main__')\n",
+            f.script.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let command = serde_json::to_string(&[f.python.as_str(), "local.py"]).unwrap();
+    let declaration = f
+        .resource("db", "data", "local-script-target", &[])
+        .replace(
+            &serde_json::to_string(&[f.python.as_str(), f.script.to_str().unwrap()]).unwrap(),
+            &command,
+        );
+    f.manifest(&(declaration + &f.resource("safe", "data", "safe-orphan-target", &[])));
+    let old = f.register();
+    assert!(
+        f.apply(&old, Operation::Prepare, Selectors::default())
+            .success
+    );
+    recycle_lane(&f);
+    fs::write(
+        &local,
+        "raise Exception('replacement script must never run')",
+    )
+    .unwrap();
+    let clean = f
+        .engine
+        .plan(&old.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    assert!(
+        clean
+            .blockers
+            .iter()
+            .any(|s| s.contains("checkout_unavailable"))
+    );
+    assert!(f.proof_file("local-script-target").exists());
+    assert!(f.engine.apply(&clean).is_err());
+    assert!(!f.mutations().iter().any(|e| e.starts_with("destroy")));
+    assert!(
+        f.apply(&old, Operation::Clean, Fixture::only("safe"))
+            .success
+    );
+    assert!(!f.proof_file("safe-orphan-target").exists());
+    // Absolute paths into the old location are equally unsafe after recycling.
+    let f = Fixture::new();
+    let local = f.lane.join("local.py");
+    fs::copy(&f.script, &local).unwrap();
+    let command = serde_json::to_string(&[f.python.as_str(), local.to_str().unwrap()]).unwrap();
+    let declaration = f.resource("db", "data", "absolute-local", &[]).replace(
+        &serde_json::to_string(&[f.python.as_str(), f.script.to_str().unwrap()]).unwrap(),
+        &command,
+    );
+    f.manifest(&declaration);
+    let old = f.register();
+    assert!(
+        f.apply(&old, Operation::Prepare, Selectors::default())
+            .success
+    );
+    recycle_lane(&f);
+    fs::write(local, "raise Exception('new script')").unwrap();
+    let p = f
+        .engine
+        .plan(&old.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    assert!(p.blockers.iter().any(|s| s.contains("absent/replacement")));
+}
+
+#[test]
+fn removed_checkout_file_receipt_does_not_block_external_cleanup() {
+    let f = Fixture::new();
+    f.manifest(
+        &(f.file("context", "template", "context")
+            + &f.resource("db", "data", "mixed-missing/{workspace_id}", &[])),
+    );
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    fs::remove_dir_all(&f.lane).unwrap();
+    assert!(
+        f.engine
+            .plan(&w.id, Operation::Clean, Selectors::default())
+            .unwrap()
+            .blockers
+            .iter()
+            .any(|s| s.contains("checkout_location_unknown"))
+    );
+    git(&f.primary, &["worktree", "prune", "--expire", "now"]);
+    let plan = f
+        .engine
+        .plan(&w.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
+    assert!(f.engine.apply(&plan).unwrap().success);
+    assert!(f.engine.status(&w.id).unwrap().resources.is_empty());
+    assert!(!f.proof_file(&format!("mixed-missing/{}", w.id)).exists());
+}
+
+#[test]
+fn symlinked_missing_checkout_is_unknown_instead_of_proven_missing() {
+    let f = Fixture::new();
+    f.manifest(&f.file("context", "template", "context"));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    fs::remove_dir_all(&f.lane).unwrap();
+    std::os::unix::fs::symlink(f.temp.path().join("nonexistent"), &f.lane).unwrap();
+    assert_eq!(
+        treetender::git::is_current(&w).unwrap_err().code,
+        "unsafe_path"
+    );
+    assert_eq!(
+        f.engine
+            .plan(&w.id, Operation::Clean, Selectors::default())
+            .unwrap_err()
+            .code,
+        "unsafe_path"
+    );
+}
+
+#[test]
+fn inspect_strips_expected_proof_but_effects_keep_exact_allocation_receipt() {
+    let f = Fixture::new();
+    f.manifest(&f.resource("db", "data", "redacted-inspect/{workspace_id}", &[]));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let receipt = f.engine.status(&w.id).unwrap().resources.remove(0);
+    assert!(f.apply(&w, Operation::Clean, Selectors::default()).success);
+    let log = fs::read_to_string(f.temp.path().join("requests")).unwrap();
+    let requests: Vec<serde_json::Value> = log
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r["action"] == "inspect" && r["receipt"].is_object())
+    );
+    for q in &requests {
+        if q["action"] == "inspect" {
+            assert_eq!(q["owner_token"], "");
+            assert!(q["receipt"].is_null() || q["receipt"]["owner_token"].is_null());
+            assert!(q["receipt"].is_null() || q["receipt"]["instance"].is_null());
+        } else {
+            assert_eq!(q["owner_token"], receipt.owner_token);
+            if q["action"] == "destroy" {
+                assert_eq!(
+                    q["receipt"]["instance"],
+                    receipt.proof.instance.clone().unwrap()
+                );
+                assert_eq!(q["receipt"]["owner_token"], receipt.owner_token);
+            }
+        }
+    }
+}
+
+#[test]
+fn echoing_inspector_cannot_adopt_a_foreign_instance_after_uncertain_prepare() {
+    let f = Fixture::new();
+    f.manifest(&f.resource("db", "data", "echo/{workspace_id}", &[]));
+    let w = f.register();
+    fs::write(f.temp.path().join("fail_after_db"), "").unwrap();
+    assert!(
+        !f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let path = f.proof_file(&format!("echo/{}", w.id));
+    fs::write(
+        &path,
+        r#"{"presence":"present","instance":"foreign-instance","owner_token":"foreign-owner"}"#,
+    )
+    .unwrap();
+    fs::write(&f.script,r#"import sys,json
+q=json.load(sys.stdin)
+assert q['action']=='inspect'
+prior=q.get('receipt') or {}
+print(json.dumps({'version':1,'proof':{'presence':'present','instance':prior.get('instance') or 'foreign-instance','owner_token':q['owner_token'],'handle':{}}}))
+"#).unwrap();
+    let p = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    assert!(p.blockers.iter().any(|s| s.contains("ownership/instance")));
+    assert!(f.engine.apply(&p).is_err());
+    assert!(fs::read_to_string(path).unwrap().contains("foreign-owner"));
+}
+
+#[test]
+fn file_destinations_cannot_modify_declarations_or_cleanup_capture_paths() {
+    let f = Fixture::new();
+    for destination in [
+        "treetender.toml",
+        ".treetender.local.toml",
+        "a/.treetender-delete-x",
+        "treetender.toml/nested",
+        "nested/.treetender.local.toml",
+    ] {
+        f.manifest(&f.file("bad", "template", destination));
+        assert_eq!(
+            f.engine.inspect(&f.lane).unwrap_err().code,
+            "unsafe_path",
+            "{destination}"
+        );
+    }
+    fs::write(f.primary.join(".treetender.local.toml"), "version=1\n").unwrap();
+    f.manifest(
+        &f.file("context", ".treetender.local.toml", "context")
+            .replace("type='file'", "type='file'\nsource_root='primary'"),
+    );
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    assert!(f.primary.join(".treetender.local.toml").exists());
+}
+
+#[test]
+fn separate_repositories_can_reference_the_same_shared_resource_without_claiming_it() {
+    let f = Fixture::new();
+    let shared = f
+        .resource("pg", "service", "shared-postgres", &[43219])
+        .replace("kind='service'", "kind='service'\nownership='shared'");
+    fs::write(
+        f.primary.join("treetender.toml"),
+        format!("version=1\n{shared}"),
+    )
+    .unwrap();
+    let first = f.engine.register(&f.primary).unwrap();
+    let other = f.temp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-b", "main"]);
+    fs::write(
+        other.join("treetender.toml"),
+        format!("version=1\n{shared}"),
+    )
+    .unwrap();
+    let second = f.engine.register(&other).unwrap();
+    assert!(f.engine.status(&first.id).unwrap().resources.is_empty());
+    assert!(f.engine.status(&second.id).unwrap().resources.is_empty());
+    assert!(f.mutations().is_empty());
+}
+
+#[test]
+fn obsolete_primary_reservations_release_target_and_ports_without_forgetting_allocations() {
+    let f = Fixture::new();
+    let declaration = f.resource("cache", "data", "obsolete-reservation", &[43220]);
+    fs::write(
+        f.primary.join("treetender.toml"),
+        format!("version=1\n{declaration}"),
+    )
+    .unwrap();
+    let primary = f.engine.register(&f.primary).unwrap();
+    assert_eq!(
+        f.engine.status(&primary.id).unwrap().resources[0].state,
+        "reserved"
+    );
+    fs::write(f.primary.join("treetender.toml"), "version=1\n").unwrap();
+    f.engine.register(&f.primary).unwrap();
+    assert!(f.engine.status(&primary.id).unwrap().resources.is_empty());
+    f.manifest(&f.resource("cache", "data", "obsolete-reservation", &[43220]));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    // Allocations with an actual/uncertain effect survive declaration removal.
+    for state in ["prepared", "uncertain", "active"] {
+        let f = Fixture::new();
+        let declaration = f.resource("db", "data", "preserved-primary", &[43221]);
+        fs::write(
+            f.primary.join("treetender.toml"),
+            format!("version=1\n{declaration}"),
+        )
+        .unwrap();
+        let primary = f.engine.register(&f.primary).unwrap();
+        if state == "uncertain" {
+            fs::write(f.temp.path().join("fail_after_db"), "").unwrap();
+        }
+        let result = f.apply(&primary, Operation::Prepare, Selectors::default());
+        assert_eq!(result.success, state != "uncertain");
+        if state == "active" {
+            assert!(
+                f.apply(&primary, Operation::Start, Selectors::default())
+                    .success
+            );
+        }
+        fs::write(f.primary.join("treetender.toml"), "version=1\n").unwrap();
+        f.engine.register(&f.primary).unwrap();
+        let resources = f.engine.status(&primary.id).unwrap().resources;
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].state, state);
+        assert!(f.proof_file("preserved-primary").exists());
+    }
+}
+
+#[test]
+fn bare_repository_worktree_layout_requires_explicit_primary_designation() {
+    let f = Fixture::new();
+    let bare = f.temp.path().join("bare.git");
+    git(
+        f.temp.path(),
+        &[
+            "clone",
+            "--bare",
+            f.primary.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    let main = f.temp.path().join("main");
+    git(&bare, &["worktree", "add", main.to_str().unwrap(), "main"]);
+    for path in [&main, &bare] {
+        let e = f.engine.register(path).unwrap_err();
+        assert_eq!(e.code, "unsupported_bare_layout");
+        assert!(e.message.contains("primary"));
+    }
+    assert!(f.engine.list().unwrap().is_empty());
+    assert!(!bare.join("treetender-id").exists());
+}
+
+fn registry_rows(f: &Fixture) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+    let db = rusqlite::Connection::open(f.state.join("registry.sqlite3")).unwrap();
+    [
+        "repositories",
+        "workspaces",
+        "declarations",
+        "claims",
+        "ports",
+        "metadata",
+        "operations",
+    ]
+    .iter()
+    .map(|table| {
+        let mut q = db
+            .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
+            .unwrap();
+        let count = q.column_count();
+        q.query_map([], |row| (0..count).map(|i| row.get(i)).collect())
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    })
+    .collect()
+}
+
+#[test]
+fn registration_rolls_back_all_rows_snapshots_claims_ports_and_generation_on_late_conflict() {
+    let f = Fixture::new();
+    f.manifest(&f.resource("taken", "data", "z-taken", &[]));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let before = registry_rows(&f);
+    let other = f.temp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-b", "main"]);
+    fs::write(
+        other.join("treetender.toml"),
+        format!(
+            "version=1\n{}{}",
+            f.resource("first", "data", "a-provisional", &[43222]),
+            f.resource("last", "data", "z-taken", &[])
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        f.engine.register(&other).unwrap_err().code,
+        "ownership_conflict"
+    );
+    assert_eq!(registry_rows(&f), before);
+    // Rollback also restores reservations pruned earlier in the same operation.
+    let primary = f
+        .engine
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|w| w.primary)
+        .unwrap();
+    fs::write(
+        f.primary.join("treetender.toml"),
+        format!(
+            "version=1\n{}",
+            f.resource("reserve", "data", "old-reserved", &[43223])
+        ),
+    )
+    .unwrap();
+    f.engine.register(&f.primary).unwrap();
+    let before = registry_rows(&f);
+    fs::write(
+        f.primary.join("treetender.toml"),
+        format!("version=1\n{}", f.resource("last", "data", "z-taken", &[])),
+    )
+    .unwrap();
+    assert!(f.engine.register(&f.primary).is_err());
+    assert_eq!(registry_rows(&f), before);
+    assert!(
+        f.engine
+            .status(&primary.id)
+            .unwrap()
+            .resources
+            .iter()
+            .any(|r| r.target == "external:old-reserved")
+    );
+}
+
+#[test]
+fn moved_checkout_with_live_git_identity_blocks_recovery_without_breaking_unrelated_reads() {
+    let f = Fixture::new();
+    f.manifest(
+        &(f.resource("db", "data", "move-protected", &[])
+            + &f.resource("free", "data", "move-independent", &[])),
+    );
+    let owner = f.register();
+    assert!(
+        f.apply(&owner, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let borrower = f.temp.path().join("borrower");
+    git(
+        &f.primary,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "borrower",
+            borrower.to_str().unwrap(),
+        ],
+    );
+    let reference = f
+        .resource("reference", "data", "move-protected", &[])
+        .replace("kind='data'", "kind='data'\nownership='borrowed'");
+    fs::write(
+        borrower.join("treetender.toml"),
+        format!("version=1\n{reference}"),
+    )
+    .unwrap();
+    let w = f.engine.register(&borrower).unwrap();
+    let moved = f.temp.path().join("moved-manually");
+    fs::rename(&borrower, &moved).unwrap();
+    let e = treetender::git::is_current(&w).unwrap_err();
+    assert_eq!(e.code, "checkout_location_unknown");
+    assert!(e.message.contains("git worktree repair"));
+    let status = f.engine.status(&w.id).unwrap();
+    assert!(
+        status
+            .issues
+            .iter()
+            .any(|s| s.contains("checkout_location_unknown"))
+    );
+    assert!(f.engine.history(&w.id).is_ok());
+    let p = f
+        .engine
+        .plan(&w.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    assert!(
+        p.blockers
+            .iter()
+            .any(|s| s.contains("checkout_location_unknown"))
+    );
+    assert!(
+        !f.engine
+            .plan(&owner.id, Operation::Clean, Fixture::only("db"))
+            .unwrap()
+            .blockers
+            .is_empty()
+    );
+    assert!(
+        f.apply(&owner, Operation::Clean, Fixture::only("free"))
+            .success
+    );
+    assert!(f.proof_file("move-protected").exists());
+    git(&f.primary, &["worktree", "repair", moved.to_str().unwrap()]);
+    let registered = f.engine.register(&moved).unwrap();
+    assert_eq!(registered.id, w.id);
+    assert!(treetender::git::is_current(&registered).unwrap());
 }

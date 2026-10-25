@@ -36,12 +36,14 @@ fn prerequisite(
     w: &Workspace,
     r: &crate::manifest::Resource,
     receipt: Option<&Receipt>,
+    recovery_dir: &Path,
 ) -> Result<Proof> {
     let proof = adapter::inspect(
         w,
         r,
         receipt.map(|c| c.owner_token.as_str()).unwrap_or(""),
         receipt.map(|c| &c.proof),
+        recovery_dir,
     )?;
     if proof.presence != Presence::Present {
         return Err(Error::new("prerequisite", "provider must prove present"));
@@ -73,12 +75,9 @@ impl Engine {
             path: d.path.clone(),
             git_dir: d.git_dir.clone(),
             common_dir: d.common_dir.clone(),
-            primary_path: d.primary_path,
+            primary_path: d.primary_path.clone(),
             primary: d.git_dir == d.common_dir,
-            workspace: g
-                .workspaces()?
-                .into_iter()
-                .find(|w| w.git_dir == d.git_dir && w.path == d.path),
+            workspace: g.current_workspace(&d)?,
             manifest: Manifest::load(&d.path)?,
         })
     }
@@ -87,6 +86,8 @@ impl Engine {
         let d = git::discover(path)?;
         // Validate before writing any Git identity markers.
         Manifest::load(&d.path)?;
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&g.db, rusqlite::TransactionBehavior::Immediate)?;
         let repo = git::identity(&d.common_dir, true)?.unwrap();
         let primary = Workspace {
             id: repo.clone(),
@@ -96,10 +97,25 @@ impl Engine {
             common_dir: d.common_dir.clone(),
             primary: true,
         };
-        g.save_workspace(&primary)?;
         let manifest = self.resolved_manifest(&primary)?;
+        for old in g.claims(Some(&primary.id))? {
+            if old.state == "reserved"
+                && !manifest.resources.iter().any(|r| {
+                    r.ownership == Ownership::Owned
+                        && old.declaration == *r
+                        && old.target == adapter::target(&primary, r)
+                })
+            {
+                g.delete_claim(&old.target)?;
+            }
+        }
+        g.save_workspace(&primary)?;
         g.save_declarations(&primary, &manifest)?;
-        for r in &manifest.resources {
+        for r in manifest
+            .resources
+            .iter()
+            .filter(|r| r.ownership == Ownership::Owned)
+        {
             let target = adapter::target(&primary, r);
             if let Some(other) = g.claim(&target)? {
                 if other.workspace_id != primary.id || other.resource_id != r.id {
@@ -129,6 +145,7 @@ impl Engine {
             }
         }
         if d.git_dir == d.common_dir {
+            transaction.commit()?;
             return Ok(primary);
         }
         let id = git::identity(&d.git_dir, true)?.unwrap();
@@ -142,6 +159,7 @@ impl Engine {
         };
         g.save_workspace(&w)?;
         g.save_declarations(&w, &self.resolved_manifest(&w)?)?;
+        transaction.commit()?;
         Ok(w)
     }
     pub fn list(&self) -> Result<Vec<Workspace>> {
@@ -153,7 +171,33 @@ impl Engine {
         let resources = g.claims(Some(&w.id))?;
         let mut observations = BTreeMap::new();
         let mut issues = vec![];
-        let mut manifest = self.resolved_manifest(&w)?;
+        let checkout_current = match git::is_current(&w) {
+            Ok(current) => current,
+            Err(e) => {
+                issues.push(e.to_string());
+                false
+            }
+        };
+        if !checkout_current {
+            issues.push("recorded checkout is missing or replaced; only receipt-based operations are available".into());
+        }
+        for stale in g
+            .workspaces()?
+            .iter()
+            .filter(|old| checkout_current && old.id != w.id && old.path == w.path)
+        {
+            issues.push(format!(
+                "replaces stale workspace {}; its receipts remain accessible by ID",
+                stale.id
+            ));
+        }
+        let mut manifest = match self.resolved_manifest(&w) {
+            Ok(m) => m,
+            Err(e) => {
+                issues.push(e.to_string());
+                Manifest::default()
+            }
+        };
         for receipt in &resources {
             if !manifest
                 .resources
@@ -170,6 +214,7 @@ impl Engine {
                 r,
                 receipt.map(|c| c.owner_token.as_str()).unwrap_or(""),
                 receipt.map(|c| &c.proof),
+                &self.registry.recovery_dir,
             ) {
                 Ok(p) => {
                     observations.insert(r.id.clone(), p);
@@ -204,7 +249,12 @@ impl Engine {
         self.plan_locked(&g, w, operation, selectors)
     }
     fn resolved_manifest(&self, w: &Workspace) -> Result<Manifest> {
-        let mut m = if w.path.exists() {
+        let current = match git::is_current(w) {
+            Ok(current) => current,
+            Err(e) if e.code == "checkout_location_unknown" => false,
+            Err(e) => return Err(e),
+        };
+        let mut m = if current {
             Manifest::load(&w.path)?
         } else {
             Manifest::default()
@@ -228,11 +278,21 @@ impl Engine {
         selectors: Selectors,
     ) -> Result<Plan> {
         let mut blockers = vec![];
+        let checkout_current = match git::is_current(&w) {
+            Ok(current) => current,
+            Err(e) if e.code == "checkout_location_unknown" => {
+                blockers.push(e.to_string());
+                false
+            }
+            Err(e) => return Err(e),
+        };
         let receipts = g.claims(Some(&w.id))?;
         let mut manifest = self.resolved_manifest(&w)?;
+        let stored_declarations = g.declarations(&w.id)?;
         let protected_declarations: BTreeSet<String> = manifest
             .resources
             .iter()
+            .chain(&stored_declarations.resources)
             .filter(|r| r.ownership != Ownership::Owned)
             .map(|r| r.id.clone())
             .collect();
@@ -384,7 +444,7 @@ impl Engine {
             registry_generation: g.generation()?,
         };
         let mut material = BTreeMap::<String, String>::new();
-        if w.path.exists() {
+        if checkout_current {
             let d = git::discover(&w.path)?;
             if d.git_dir != w.git_dir
                 || d.common_dir != w.common_dir
@@ -407,8 +467,10 @@ impl Engine {
                 );
             }
         } else if !matches!(operation, Operation::Clean | Operation::Stop) {
-            blockers
-                .push("checkout is missing; only receipt-based cleanup/stop is available".into());
+            blockers.push(
+                "checkout is missing or replaced; only receipt-based cleanup/stop is available"
+                    .into(),
+            );
         }
         let mut execution_order = order;
         if matches!(operation, Operation::Stop | Operation::Clean) {
@@ -436,7 +498,7 @@ impl Engine {
                     if !matches!(operation, Operation::Stop | Operation::Clean)
                         && prerequisites.contains(&id)
                     {
-                        match prerequisite(&w, r, receipt) {
+                        match prerequisite(&w, r, receipt, &self.registry.recovery_dir) {
                             Ok(proof) => {
                                 plan.observations.insert(id.clone(), proof);
                             }
@@ -459,7 +521,7 @@ impl Engine {
                     continue;
                 }
                 if matches!(operation, Operation::Build | Operation::Check) {
-                    match prerequisite(&w, r, receipt) {
+                    match prerequisite(&w, r, receipt, &self.registry.recovery_dir) {
                         Ok(proof) => {
                             plan.observations.insert(id.clone(), proof);
                         }
@@ -497,7 +559,13 @@ impl Engine {
                     continue;
                 }
                 let token = receipt.map(|c| c.owner_token.as_str()).unwrap_or("");
-                let proof = match adapter::inspect(&w, r, token, receipt.map(|c| &c.proof)) {
+                let proof = match adapter::inspect(
+                    &w,
+                    r,
+                    token,
+                    receipt.map(|c| &c.proof),
+                    &self.registry.recovery_dir,
+                ) {
                     Ok(p) => p,
                     Err(e) => {
                         blockers.push(format!("{} inspection failed: {e}", r.id));
@@ -654,12 +722,31 @@ impl Engine {
         }
         // Freeze adapter executables and workspace-local script arguments when available.
         for r in &manifest.resources {
+            if !checkout_current
+                && !plan.steps.iter().any(|step| step.id == r.id)
+                && !plan.observations.contains_key(&r.id)
+            {
+                continue;
+            }
             if let Adapter::Script { command, .. } = &r.adapter {
-                self.command_material(&w.path, command, &mut material)?;
+                if checkout_current {
+                    self.command_material(&w.path, command, &mut material)?;
+                } else {
+                    match adapter::recovery_command(&w, command) {
+                        Ok(argv) => self.command_material(
+                            &self.registry.recovery_dir,
+                            &argv,
+                            &mut material,
+                        )?,
+                        Err(e) => blockers.push(format!("{}: {e}", r.id)),
+                    }
+                }
             }
         }
         for t in &manifest.tasks {
-            self.command_material(&w.path, &t.command, &mut material)?;
+            if checkout_current {
+                self.command_material(&w.path, &t.command, &mut material)?;
+            }
         }
         plan.blockers = blockers;
         plan.fingerprint = adapter::digest(&serde_json::to_vec(&(
@@ -833,7 +920,13 @@ impl Engine {
                 "allocation belongs to another workspace",
             ));
         }
-        let current = adapter::inspect(w, resource, &receipt.owner_token, Some(&receipt.proof))?;
+        let current = adapter::inspect(
+            w,
+            resource,
+            &receipt.owner_token,
+            Some(&receipt.proof),
+            &self.registry.recovery_dir,
+        )?;
         if current.presence == Presence::Unknown
             || (current.presence == Presence::Present && !proof_matches(&current, &receipt))
         {
@@ -863,13 +956,20 @@ impl Engine {
             action(step.action),
             &receipt.owner_token,
             Some(&current),
+            &self.registry.recovery_dir,
         )?;
         match step.action {
             Operation::Clean => {
                 if proof.presence != Presence::Missing {
                     return Err(Error::new("adapter_proof", "destroy must report missing"));
                 }
-                let checked = adapter::inspect(w, resource, &receipt.owner_token, Some(&current))?;
+                let checked = adapter::inspect(
+                    w,
+                    resource,
+                    &receipt.owner_token,
+                    Some(&current),
+                    &self.registry.recovery_dir,
+                )?;
                 if checked.presence != Presence::Missing {
                     return Err(Error::new(
                         "adapter_proof",
@@ -890,8 +990,13 @@ impl Engine {
                     ));
                 }
                 receipt.proof = proof;
-                let checked =
-                    adapter::inspect(w, resource, &receipt.owner_token, Some(&receipt.proof))?;
+                let checked = adapter::inspect(
+                    w,
+                    resource,
+                    &receipt.owner_token,
+                    Some(&receipt.proof),
+                    &self.registry.recovery_dir,
+                )?;
                 if !proof_matches(&checked, &receipt) {
                     return Err(Error::new(
                         "adapter_proof",

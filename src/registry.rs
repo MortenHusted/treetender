@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) struct Registry {
     pub root: PathBuf,
+    pub recovery_dir: PathBuf,
 }
 pub(crate) struct Guard {
     _file: File,
@@ -29,7 +30,31 @@ impl Registry {
             ));
         }
         let root = path.canonicalize()?;
-        let registry = Self { root };
+        let recovery = root.join("adapter-recovery");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&recovery)
+            .or_else(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            })?;
+        let metadata = std::fs::symlink_metadata(&recovery)?;
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(Error::new(
+                "state_permissions",
+                "adapter recovery directory must be private and cannot be a symlink",
+            ));
+        }
+        let registry = Self {
+            root,
+            recovery_dir: recovery,
+        };
         let g = registry.lock()?;
         g.db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
@@ -130,15 +155,23 @@ impl Guard {
             return Ok(w);
         }
         let discovery = crate::git::discover(input)?;
-        self.workspaces()?
-            .into_iter()
-            .find(|w| w.git_dir == discovery.git_dir && w.path == discovery.path)
-            .ok_or_else(|| {
-                Error::new(
-                    "unregistered",
-                    "register this checkout first; relocated checkouts require register again",
-                )
-            })
+        self.current_workspace(&discovery)?.ok_or_else(|| {
+            Error::new(
+                "unregistered",
+                "register this checkout first; relocated checkouts require register again",
+            )
+        })
+    }
+    pub fn current_workspace(&self, d: &crate::git::Discovery) -> Result<Option<Workspace>> {
+        let id = crate::git::identity(&d.git_dir, false)?;
+        let repository_id = crate::git::identity(&d.common_dir, false)?;
+        Ok(self.workspaces()?.into_iter().find(|w| {
+            Some(&w.id) == id.as_ref()
+                && Some(&w.repository_id) == repository_id.as_ref()
+                && w.git_dir == d.git_dir
+                && w.common_dir == d.common_dir
+                && w.path == d.path
+        }))
     }
     pub fn save_workspace(&self, w: &Workspace) -> Result<()> {
         let previous: Option<String> = self
@@ -195,8 +228,8 @@ impl Guard {
                 format!("{} is reserved by another allocation", receipt.target),
             ));
         }
-        // BEGIN IMMEDIATE makes claim + all port reservations + generation atomic.
-        self.db.execute_batch("BEGIN IMMEDIATE")?;
+        // A savepoint is atomic both alone and inside the registration transaction.
+        self.db.execute_batch("SAVEPOINT save_claim")?;
         let result = (|| -> Result<()> {
             for port in &receipt.declaration.ports {
                 let other: Option<String> = self
@@ -222,17 +255,18 @@ impl Guard {
         })();
         match result {
             Ok(()) => {
-                self.db.execute_batch("COMMIT")?;
+                self.db.execute_batch("RELEASE save_claim")?;
                 Ok(())
             }
             Err(e) => {
-                self.db.execute_batch("ROLLBACK")?;
+                self.db
+                    .execute_batch("ROLLBACK TO save_claim; RELEASE save_claim")?;
                 Err(e)
             }
         }
     }
     pub fn delete_claim(&self, target: &str) -> Result<()> {
-        self.db.execute_batch("BEGIN IMMEDIATE")?;
+        self.db.execute_batch("SAVEPOINT delete_claim")?;
         let result = (|| -> Result<()> {
             self.db
                 .execute("DELETE FROM ports WHERE target=?", [target])?;
@@ -242,11 +276,12 @@ impl Guard {
         })();
         match result {
             Ok(()) => {
-                self.db.execute_batch("COMMIT")?;
+                self.db.execute_batch("RELEASE delete_claim")?;
                 Ok(())
             }
             Err(e) => {
-                self.db.execute_batch("ROLLBACK")?;
+                self.db
+                    .execute_batch("ROLLBACK TO delete_claim; RELEASE delete_claim")?;
                 Err(e)
             }
         }

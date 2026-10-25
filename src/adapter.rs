@@ -457,11 +457,16 @@ pub(crate) fn inspect(
     resource: &Resource,
     token: &str,
     receipt: Option<&Proof>,
+    recovery_dir: &Path,
 ) -> Result<Proof> {
     match &resource.adapter {
         Adapter::File {
             destination, mode, ..
         } => {
+            if !crate::git::is_current(w)? {
+                return Ok(Proof::missing());
+            }
+            crate::manifest::writable_destination(destination)?;
             let mut proof = file_proof(&w.path, destination, *mode, token)?;
             if proof.presence == Presence::Present
                 && receipt.is_none_or(|old| old.instance != proof.instance)
@@ -470,7 +475,7 @@ pub(crate) fn inspect(
             }
             Ok(proof)
         }
-        _ => invoke(w, resource, "inspect", token, receipt),
+        _ => invoke(w, resource, "inspect", token, receipt, recovery_dir),
     }
 }
 pub(crate) fn invoke(
@@ -479,6 +484,7 @@ pub(crate) fn invoke(
     action: &str,
     token: &str,
     receipt: Option<&Proof>,
+    recovery_dir: &Path,
 ) -> Result<Proof> {
     if !supports(resource, action) {
         return Err(Error::new(
@@ -493,8 +499,15 @@ pub(crate) fn invoke(
             mode,
             source_root,
         } => {
+            crate::manifest::writable_destination(destination)?;
+            if action != "inspect" && !crate::git::is_current(w)? {
+                return Err(Error::new(
+                    "checkout_unavailable",
+                    "file effects require the original current checkout",
+                ));
+            }
             match action {
-                "inspect" => return inspect(w, resource, token, receipt),
+                "inspect" => return inspect(w, resource, token, receipt, recovery_dir),
                 "prepare" => {
                     let source_path = match source_root {
                         SourceRoot::Workspace => w.path.clone(),
@@ -545,18 +558,39 @@ pub(crate) fn invoke(
             timeout_secs,
             ..
         } => {
+            let inspecting = action == "inspect";
             let input = AdapterRequest {
                 version: 1,
                 action: action.into(),
                 workspace: w.clone(),
                 resource_id: resource.id.clone(),
                 target: resource.target.clone(),
-                owner_token: token.into(),
-                receipt: receipt.cloned(),
+                owner_token: if inspecting {
+                    String::new()
+                } else {
+                    token.into()
+                },
+                receipt: receipt.cloned().map(|mut proof| {
+                    if inspecting {
+                        proof.instance = None;
+                        proof.owner_token = None;
+                    }
+                    proof
+                }),
+            };
+            let checkout_current = crate::git::is_current(w)?;
+            let recovery_argv = if checkout_current {
+                None
+            } else {
+                Some(recovery_command(w, command)?)
             };
             let bytes = run(
-                command,
-                &w.path,
+                recovery_argv.as_deref().unwrap_or(command),
+                if checkout_current {
+                    &w.path
+                } else {
+                    recovery_dir
+                },
                 Some(serde_json::to_vec(&input)?),
                 *timeout_secs,
             )?;
@@ -587,6 +621,70 @@ pub(crate) fn invoke(
     }
 }
 
+/// Receipt-only recovery cannot resolve executable or file arguments from a
+/// replacement checkout. Bare non-option arguments are ambiguous relative paths;
+/// adapters needing literals can use option flags or an absolute wrapper script.
+pub(crate) fn recovery_command(w: &Workspace, argv: &[String]) -> Result<Vec<String>> {
+    use std::os::unix::fs::PermissionsExt;
+    let program = argv
+        .first()
+        .ok_or_else(|| Error::new("adapter_unavailable", "empty adapter command"))?;
+    let mut result = argv.to_vec();
+    let executable = if Path::new(program).is_absolute() {
+        Path::new(program).to_path_buf()
+    } else if program.contains('/') {
+        return Err(Error::new(
+            "checkout_unavailable",
+            "receipt-only cleanup cannot run a repository-relative executable",
+        ));
+    } else {
+        let mut found = None;
+        for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+            if !dir.is_absolute() {
+                return Err(Error::new(
+                    "checkout_unavailable",
+                    "receipt-only cleanup requires absolute PATH entries",
+                ));
+            }
+            let candidate = dir.join(program);
+            if std::fs::metadata(&candidate)
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            {
+                found = Some(candidate);
+                break;
+            }
+        }
+        found.ok_or_else(|| {
+            Error::new(
+                "adapter_unavailable",
+                format!("executable not found: {program}"),
+            )
+        })?
+    };
+    let paths = std::iter::once(executable.as_path()).chain(
+        argv.iter()
+            .skip(1)
+            .filter(|arg| !arg.starts_with('-'))
+            .map(Path::new),
+    );
+    for path in paths {
+        if !path.is_absolute() {
+            return Err(Error::new(
+                "checkout_unavailable",
+                "receipt-only cleanup requires absolute file arguments; repository-relative/ambiguous arguments are blocked",
+            ));
+        }
+        if path.starts_with(&w.path) || path.canonicalize().is_ok_and(|p| p.starts_with(&w.path)) {
+            return Err(Error::new(
+                "checkout_unavailable",
+                "adapter command references the absent/replacement checkout",
+            ));
+        }
+    }
+    result[0] = executable.to_string_lossy().into_owned();
+    Ok(result)
+}
+
 /// Execute argv as trusted code. Output is bounded and process groups time out.
 pub(crate) fn run(
     argv: &[String],
@@ -597,7 +695,7 @@ pub(crate) fn run(
     const LIMIT: u64 = 1024 * 1024;
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
-        .current_dir(if cwd.exists() { cwd } else { Path::new("/") })
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

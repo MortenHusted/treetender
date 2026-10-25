@@ -116,7 +116,7 @@ pub fn relative(path: &str) -> Result<()> {
             format!("expected safe relative path: {path}"),
         ));
     }
-    // Git metadata and TreeTender's private overlay are never writable resources.
+    // Git metadata is never a declared file source or destination.
     if Path::new(path)
         .components()
         .any(|c| c.as_os_str() == ".git")
@@ -124,6 +124,22 @@ pub fn relative(path: &str) -> Result<()> {
         return Err(Error::new(
             "unsafe_path",
             "resources cannot address Git metadata",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn writable_destination(path: &str) -> Result<()> {
+    relative(path)?;
+    if Path::new(path).components().any(|part| {
+        let part = part.as_os_str().to_string_lossy();
+        part == "treetender.toml"
+            || part == ".treetender.local.toml"
+            || part.starts_with(".treetender-delete-")
+    }) {
+        return Err(Error::new(
+            "unsafe_path",
+            "file destinations cannot modify lifecycle declarations or cleanup quarantine paths",
         ));
     }
     Ok(())
@@ -217,7 +233,7 @@ impl Manifest {
                     ..
                 } => {
                     relative(source)?;
-                    relative(destination)?;
+                    writable_destination(destination)?;
                     if source == destination && *source_root == SourceRoot::Workspace {
                         return Err(Error::new("manifest", "source equals destination"));
                     }
