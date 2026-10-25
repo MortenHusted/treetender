@@ -14,6 +14,8 @@ This is a working design for discussion, not an approved command syntax or integ
 
 These lifecycles belong together without being collapsed into one running/stopped flag.
 
+The [reference mapping](reference-mapping.md) grounds candidate patterns in locally inspected implementations; it does not select an implementation or change the ownership rules here.
+
 ## Proposed operations
 
 | Operation | Expected effect | Must preserve |
@@ -33,7 +35,7 @@ Preparation and building do not become a second package manager or compiler. The
 
 ## Ordinary sessions retain resources
 
-The settled default is to stop workspace services at session end and keep the checkout/data. Starting again should reuse the retained resources when checks pass. Cleanup must be easy to request explicitly, without manually discovering databases and registrations.
+The settled default is to stop workspace services at session end and keep the checkout/data. Starting again should reuse the retained resources when checks pass. Cleanup must be easy to request explicitly, without manually discovering databases, storage namespaces, volumes and registrations.
 
 ```mermaid
 flowchart LR
@@ -59,7 +61,7 @@ The proposed convenience is one explicit cleanup operation with a visible scope 
 | Linked files/context | Resolve source identity/location and distinguish shared inputs from mutable workspace state | Repair owned links after moves; never delete their source when cleaning a link |
 | Agent resources | Materialize declared instructions, skills, hooks and tool-config references; inspect missing/private inputs | Keep mutable state isolated; do not copy whole credential/profile homes or rename profiles; do not execute newly materialized hooks as an incidental inspection step |
 | Toolchains/dependencies | Invoke declared existing tools and report missing prerequisites | Distinguish workspace installs from shared toolchains/caches; do not remove shared installations during lane cleanup |
-| Database/data lanes | Provision selected isolated data, check identity/connection and run declared preparation | A shared database server is borrowed; owned development/test lanes may be cleaned or retained explicitly |
+| Persistent data/storage | Provision selected isolated resources and check provider identity/access; examples include database lanes, storage prefixes, volumes and directories | A shared server, bucket or backing store is borrowed; cleanup/retention selects only the owned resource or namespace through its adapter |
 | Services and routes | Configure selected provider-owned registrations and check readiness | Stop only selected activity; route-only providers need an explicit stop/disable policy because they may have no process to stop |
 | Ports and endpoint names | Allocate/check claims for the intended workspace and detect conflicts with retained or concurrent workspaces | A stopped listener does not prove a claim is free; releasing and reclaiming assignments must be deliberate |
 | Build tasks and artifacts | Run repository-owned build commands, record declared outputs and report freshness/check results | Keep artifact cleanup separate from application data; never infer every untracked file is a disposable build output |
@@ -68,6 +70,14 @@ The proposed convenience is one explicit cleanup operation with a visible scope 
 An adapter supports the relevant capabilities; every resource does not need start/stop/build behavior. A file-copy adapter and a service adapter can both participate without pretending to have the same state machine. The minimum capability contract is still to be designed against real adapters.
 
 Ownership must distinguish resources TreeTender created, existing resources explicitly adopted, and shared resources merely referenced. Matching a name or path does not establish ownership. A cleanup plan must also account for resources that still depend on a selected resource or on a resource the user chose to keep.
+
+### Persistent data is a generic resource concern
+
+The user clarified that data cleanup may mean a database, storage or another persistent resource. It must not be encoded as a database-specific lifecycle or a special keep-database switch in the generic core. Retention and cleanup select resources by declared identity, ownership and policy; the relevant adapter implements their actual inspection and removal.
+
+For example, the same keep/cleanup intent can apply to an isolated database schema, an object-storage prefix or a named volume. Owning a prefix does not mean owning its shared bucket, just as owning a database lane does not mean owning its database server. The plan must identify the precise provider target and scope before requesting removal.
+
+This is a common lifecycle contract, not a promise that every backend has identical operations. A provider may support only inspection and retention, or may be unable to establish safe deletion. It must report that limitation. Setup/cleanup scripts remain usable, but opaque effects cannot silently become managed resources with guaranteed recovery.
 
 ## Builds from the beginning
 
@@ -104,7 +114,8 @@ The agent interface is distinct from workspace agent context in the resource tab
 | Fresh Rust worktree with local agent context | Prepare declared context/dependencies; build separately; no invented database or service lifecycle |
 | Rails worktree with isolated dev/test lanes | Prepare owned lanes/config, run declared builds, start selected services; stop retains data |
 | Files prepared, then database provision fails | Report partial preparation with completed effects; retry checks them rather than blindly recreating everything |
-| Cleanup requested while keeping a database | Remove only selected resources and retain its identity plus any required cleanup/dependency records |
+| Cleanup requested while keeping persistent resources | Apply the same selection/retention rules to database lanes, storage namespaces, volumes or custom state; retain their identities and required cleanup/dependency records |
+| Workspace owns a prefix in a shared storage bucket | Clean only the verified owned prefix when explicitly selected; keep the bucket and unrelated objects |
 | Cleanup finds an edited generated file | Report the edit and preserve it unless replacement/removal was explicitly selected |
 | Checkout moved with stopped services | Preserve identity/data and reconcile changed paths without starting services |
 | Two workspaces want the same reserved port | Report/resolve the claim before execution, even if neither service is listening |
@@ -116,6 +127,7 @@ The agent interface is distinct from workspace agent context in the resource tab
 
 - Which operations are first-class commands, and which are compositions or options?
 - What exact resources does a default explicit clean select, and which retention presets keep it convenient?
+- What target/ownership proof is sufficient for each resource adapter to offer deletion, especially within a shared backing store?
 - When should stopping a workspace release its ports/routes versus reserve stable endpoints for later use?
 - What capabilities and ownership receipts must a script adapter provide before cleanup can be considered managed?
 - How are retained resources cleaned after a repository-owned cleanup script is no longer present?

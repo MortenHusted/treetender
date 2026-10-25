@@ -4,6 +4,8 @@ Updated: 2026-10-25
 
 This is context for design decisions, not a dependency selection or endorsement of untested behavior.
 
+The [local reference mapping](reference-mapping.md) pins the inspected source commits and maps their lifecycle patterns onto TreeTender. The [devenv study](reference-devenv.md) traces its tasks, process capabilities, activity and persistent-state handling in more detail.
+
 ## Lessons from existing tooling
 
 Inspection of the existing personal `worktree-setup` at commit `3bf71ea45fbc6a544e449466d4fe9fbbe59f21df` found:

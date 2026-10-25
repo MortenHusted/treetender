@@ -14,7 +14,7 @@ That arrangement makes relocation expensive, hides resource ownership and gives 
 
 - Build a standalone Rust product with CLI, TUI and agent access included from the beginning, sharing the same lifecycle behavior.
 - Describe workspace preparation and cleanup locally to the repository, with central discovery/registration of workspaces and their resources.
-- Support file copying, isolated database lanes and optional setup/teardown operations.
+- Support file copying, isolated persistent resources and optional setup/teardown operations; persistent resources can be database lanes, storage namespaces, volumes or user-defined state.
 - Reuse Git's repository/worktree facilities rather than maintain a competing model of Git state.
 - Treat Portman as an integration. It must not become a mandatory dependency or define the product's entire resource model.
 - Allow other people to bring their own scripts and tools through a small integration contract.
@@ -22,6 +22,7 @@ That arrangement makes relocation expensive, hides resource ownership and gives 
 - Keep identity separate from current filesystem location. Execution uses real paths; portable declarations should not hard-code one developer's checkout paths.
 - Keep personal inputs and machine overrides private. Introducing tracked defaults into an existing team repository requires an explicit opt-in.
 - Retain the checkout and data by default when ending a session; make explicit cleanup straightforward.
+- Express retention/cleanup generically per owned resource and delegate backend-specific effects to its adapter; the core must not assume persistent data always means a database.
 - Include both TreeTender's own build/test/package workflow and managed-workspace build tasks/artifacts in the initial scope.
 - Include workspace agent resources as well as the structured interface through which agents operate TreeTender.
 
