@@ -58,6 +58,15 @@ TreeTender is available under the [MIT License](LICENSE). There is no published 
 
 If you use TreeTender downstream, I would appreciate a short note in an issue or a link to what you built. This is an optional courtesy, not an additional license condition.
 
+## Install
+
+```sh
+brew install mortenhusted/tap/treetender
+treetender --version
+```
+
+The initial Homebrew formula builds a pinned source revision with locked dependencies. It installs the CLI/TUI and bundled documentation/examples; it does not start services or adopt existing workspaces. Agent callers can discover the interface with `treetender --json agent schema`.
+
 ## Build and verify
 
 ```sh
