@@ -2,7 +2,7 @@
 
 Updated: 2026-10-25
 
-Status: agreed direction with open design questions. This is not an implementation-ready specification. Command names, configuration syntax and the integration protocol have not been chosen. The [lifecycle model](lifecycle.md) develops the proposed operations, resources and scenarios.
+The [implementation contract](plans/2026-10-25-implementation.md) resolves the initial command, registry and adapter choices for this agreed direction. See [usage](usage.md) and [adapter formats](adapters.md) for executable interfaces. The [lifecycle model](lifecycle.md) records the earlier design exploration.
 
 ## Problem
 
@@ -68,16 +68,12 @@ This scope is proposed for refinement, not a commitment to an implementation ord
 - Ending a normal session retains data and the checkout; explicit cleanup can keep selected resources without manual database/registration discovery.
 - TUI, CLI and agent callers share the same plans, effects and retention rules; build status is distinguishable from service health.
 
-## Open decisions
+## Further adoption decisions
 
-- What is the smallest useful resource model and lifecycle vocabulary?
-- How do generic script actions declare effects, report resource handles and supply cleanup behavior?
-- Which integration operations are needed for planning, application, inspection and recovery?
-- Where do portable declarations, private overlays and runtime records live, and how are their versions handled?
-- How are repository, checkout and workspace identities represented and rediscovered after relocation?
-- Which tool owns port reservation, and how are existing registrations reconciled?
-- How should existing workspaces be adopted without starting services or replacing their data?
-- Which parts of existing Rust tooling are worth reusing, and which need independent implementation?
+- Which production database/storage providers should be supplied beyond the generic contract and disposable fixtures?
+- What ownership evidence should allow adopting existing live workspaces and Portman registrations?
+- Which wider platforms and package distribution targets should be supported?
+- Whether and under what license to release the private project publicly.
 
 ## Initial exclusions
 

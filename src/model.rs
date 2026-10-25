@@ -192,6 +192,7 @@ pub struct Status {
     pub operations: Vec<OperationRecord>,
     pub observations: std::collections::BTreeMap<String, Proof>,
     pub issues: Vec<String>,
+    pub builds: Vec<crate::build::BuildStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

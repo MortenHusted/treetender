@@ -1,4 +1,6 @@
 /target/
+/.treetender.local.toml
+/.mempacer.local.json
 /.worktrees/
 /.env
 /.env.*

@@ -3,6 +3,7 @@ name = "treetender"
 version = "0.1.0"
 edition = "2024"
 description = "Ownership-aware local workspace lifecycle core"
+publish = false
 
 [dependencies]
 anyhow = "1"

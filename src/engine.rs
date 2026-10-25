@@ -177,12 +177,15 @@ impl Engine {
                 Err(e) => issues.push(format!("{}: {e}", r.id)),
             }
         }
+        let operations = g.history(&w.id)?;
+        let builds = crate::build::inspect(&w.path, &manifest.tasks, &operations);
         Ok(Status {
             resources,
-            operations: g.history(&w.id)?,
+            operations,
             workspace: w,
             observations,
             issues,
+            builds,
         })
     }
     pub fn history(&self, workspace: &str) -> Result<Vec<OperationRecord>> {
@@ -672,6 +675,42 @@ impl Engine {
         argv: &[String],
         material: &mut BTreeMap<String, String>,
     ) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(program) = argv.first() {
+            let declared = Path::new(program);
+            let executable = if declared.is_absolute() {
+                Some(declared.to_path_buf())
+            } else if program.contains('/') {
+                Some(root.join(declared))
+            } else {
+                std::env::var_os("PATH").and_then(|paths| {
+                    std::env::split_paths(&paths)
+                        .map(|directory| {
+                            if directory.is_absolute() {
+                                directory.join(program)
+                            } else {
+                                root.join(directory).join(program)
+                            }
+                        })
+                        .find(|candidate| {
+                            candidate
+                                .metadata()
+                                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                        })
+                })
+            };
+            match executable.and_then(|path| path.canonicalize().ok()) {
+                Some(path) => {
+                    material.insert(
+                        format!("executable:{program}:{}", path.display()),
+                        adapter::digest(&std::fs::read(path)?),
+                    );
+                }
+                None => {
+                    material.insert(format!("executable:{program}"), "unavailable".into());
+                }
+            }
+        }
         for arg in argv {
             let path = Path::new(arg);
             let resolved = if path.is_absolute() {
@@ -759,14 +798,9 @@ impl Engine {
     fn execute_step(&self, g: &Guard, plan: &Plan, step: &Step) -> Result<Option<String>> {
         let w = &plan.workspace;
         if let Some(task) = plan.manifest.tasks.iter().find(|t| t.id == step.id) {
+            let inputs = crate::build::input_fingerprints(&w.path, task)?;
             adapter::run(&task.command, &w.path, None, task.timeout_secs)?;
-            let mut artifacts = BTreeMap::new();
-            for output in &task.outputs {
-                artifacts.insert(output, adapter::tree_snapshot(&w.path, output)?);
-            }
-            return Ok(Some(serde_json::to_string(
-                &serde_json::json!({"artifacts":artifacts,"kind":task.kind}),
-            )?));
+            return Ok(Some(crate::build::completed(&w.path, task, inputs)?));
         }
         let resource = plan
             .manifest

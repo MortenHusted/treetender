@@ -2,29 +2,63 @@
 
 Reproducible workspace lifecycles for humans, agents and their tools.
 
-TreeTender is a planned Rust tool with CLI, TUI and agent access for preparing, inspecting and cleaning up development workspaces. It will coordinate the files, database lanes, builds and services a workspace needs through repository-local declarations and interchangeable integrations.
+TreeTender is a Rust tool with CLI, TUI and structured agent access for preparing, building, inspecting and cleaning development workspaces. Repository-local declarations describe resources; a central registry records identity, ownership, references and partial operations.
 
-Git remains responsible for repositories and worktrees. Portman is the first intended service integration; other tools and user scripts should be able to participate through the same lifecycle contract. Editors, agents and tools such as Orca can invoke TreeTender through simple commands.
+Git remains responsible for repositories and worktrees. External adapters handle database namespaces, storage and service supervision. Editors, agents and tools such as Orca invoke the same commands.
 
-## Status
+## Use
 
-Private project, in design. This repository contains the product brief and working constraints; there is no executable or supported configuration format yet.
+```sh
+cargo build --release --locked
+target/release/treetender --repo /path/to/checkout init
+target/release/treetender --repo /path/to/checkout inspect
+target/release/treetender --repo /path/to/checkout register
+target/release/treetender --repo /path/to/checkout prepare
+target/release/treetender --repo /path/to/checkout prepare --apply
+```
 
-Read the [product brief](docs/brief.md) for the agreed direction, proposed first scope and open decisions. The [lifecycle model](docs/lifecycle.md) explores operations and resource ownership. [Research](docs/research.md) records relevant prior art and the problems observed in the existing setup.
+Lifecycle commands show a plan until `--apply` is supplied. Use `plan clean --out cleanup.json` and `apply cleanup.json` to review separately. `stop --apply` retains data and checkout; `clean --keep database --apply` retains the named resource regardless of backend.
 
-## Intended responsibilities
+```sh
+treetender tui
+treetender --json agent schema
+treetender --json agent resources
+treetender --json status
+```
 
-- Prepare explicitly selected local files and configuration.
-- Provision isolated persistent resources, such as development/test database lanes or storage namespaces.
-- Run declared workspace builds/checks and track their artifacts.
-- Coordinate service registrations and lifecycle through integrations.
-- Inspect owned resources and report what is ready, missing or inconsistent.
-- Plan selective teardown while preserving resources the user wants to keep.
-- Track workspace identities and current locations without embedding machine paths in portable recipes.
-- Retain checkout/data at session end and make explicit cleanup easy.
+See [usage](docs/usage.md), the [adapter contract](docs/adapters.md) and [examples](examples/). Put machine-specific declarations in ignored `.treetender.local.toml`. Existing live workspaces are never automatically adopted or migrated.
 
-CLI, TUI and agent-facing operation share one lifecycle model from the start. Noninteractive invocation, structured results, inspectable plans and explicit destructive actions are initial requirements, alongside TreeTender's own build/test/package workflow.
+## Safeguards
+
+- Primary checkout resources are protected by identity, including after a branch rename.
+- Shared and borrowed references never grant destruction rights; other registered users of a resource protect it too.
+- Cleanup requires an exact recorded instance and provider ownership proof. Unknown state blocks cleanup.
+- Saved plans are revalidated under a process lock. Partial effects retain provisional claims and recovery history.
+- Generated files are explicit, edits are preserved, and symlink escapes are refused.
+- Build/check commands are separate from service startup; stop retains resource and port claims.
+
+Adapters and tasks are trusted executable code, with the user's normal permissions. Provider correctness is part of the ownership boundary; TreeTender cannot sandbox a script that ignores its contract.
+
+## Integrations and scope
+
+The initial implementation includes explicit file copy/link operations, generic JSON command adapters, dependency ordering, build/check artifacts and a read-only Portman service observer. Managed service effects use adapters with real instance/ownership proof. The Portman observer does not synchronize config, start/stop services or adopt registrations.
+
+The namespace example models database and storage lanes in disposable files. Production database/storage providers must implement the documented contract; the fixture is not a database driver. Build artifacts are observed and retained; destructive artifact cleanup requires an explicitly managed resource.
+
+The repository is private. No public release or license has been selected. [Product direction](docs/brief.md), [implementation contract](docs/plans/2026-10-25-implementation.md) and [research](docs/research.md) explain the design.
+
+## Build and verify
+
+```sh
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo build --release --locked
+cargo package --locked --allow-dirty
+```
+
+Tests use temporary Git repositories and disposable provider fixtures. They require Git and Python 3; runtime does not require Python. macOS and Linux are the initial supported hosts.
 
 ## Boundaries
 
-TreeTender will reuse Git and existing service tooling. It is not intended to replace a process supervisor, secret manager, editor or agent orchestrator. Existing workspaces and services remain unchanged while the new lifecycle contract is designed and verified.
+TreeTender reuses Git and existing service tooling. It does not replace a supervisor, secret manager, editor or agent orchestrator. Checkout creation/removal stays with Git callers and existing worktree tools; resource cleanup never implicitly removes a checkout.
