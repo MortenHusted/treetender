@@ -337,8 +337,8 @@ fn proof_at(
 }
 
 pub(crate) fn target(w: &Workspace, resource: &Resource) -> String {
-    match &resource.adapter {
-        Adapter::File { destination, .. } => format!("file:{}:{destination}", w.id),
+    match resource.adapter.as_ref() {
+        Some(Adapter::File { destination, .. }) => format!("file:{}:{destination}", w.id),
         _ => format!("external:{}", resource.target),
     }
 }
@@ -445,10 +445,11 @@ fn quarantine_delete(
 }
 
 pub(crate) fn supports(resource: &Resource, action: &str) -> bool {
-    match &resource.adapter {
-        Adapter::File { .. } => ["inspect", "prepare", "destroy"].contains(&action),
-        Adapter::Script { capabilities, .. } => capabilities.iter().any(|c| c == action),
-        Adapter::Portman { .. } => action == "inspect",
+    match resource.adapter.as_ref() {
+        None => false,
+        Some(Adapter::File { .. }) => ["inspect", "prepare", "destroy"].contains(&action),
+        Some(Adapter::Script { capabilities, .. }) => capabilities.iter().any(|c| c == action),
+        Some(Adapter::Portman { .. }) => action == "inspect",
     }
 }
 
@@ -459,10 +460,14 @@ pub(crate) fn inspect(
     receipt: Option<&Proof>,
     recovery_dir: &Path,
 ) -> Result<Proof> {
-    match &resource.adapter {
-        Adapter::File {
+    match resource.adapter.as_ref() {
+        None => Err(Error::new(
+            "passive_resource",
+            "passive resource has no live observation; configure an observer to verify a prerequisite",
+        )),
+        Some(Adapter::File {
             destination, mode, ..
-        } => {
+        }) => {
             if !crate::git::is_current(w)? {
                 return Ok(Proof::missing());
             }
@@ -492,13 +497,17 @@ pub(crate) fn invoke(
             format!("{} lacks {action}", resource.id),
         ));
     }
-    match &resource.adapter {
-        Adapter::File {
+    match resource.adapter.as_ref() {
+        None => Err(Error::new(
+            "passive_resource",
+            "passive resource has no live observation; configure an observer to verify a prerequisite",
+        )),
+        Some(Adapter::File {
             source,
             destination,
             mode,
             source_root,
-        } => {
+        }) => {
             crate::manifest::writable_destination(destination)?;
             if action != "inspect" && !crate::git::is_current(w)? {
                 return Err(Error::new(
@@ -553,11 +562,11 @@ pub(crate) fn invoke(
             }
             file_proof(&w.path, destination, *mode, token)
         }
-        Adapter::Script {
+        Some(Adapter::Script {
             command,
             timeout_secs,
             ..
-        } => {
+        }) => {
             let inspecting = action == "inspect";
             let input = AdapterRequest {
                 version: 1,
@@ -615,9 +624,9 @@ pub(crate) fn invoke(
             }
             Ok(response.proof)
         }
-        Adapter::Portman {
+        Some(Adapter::Portman {
             service, socket, ..
-        } => portman_status(socket, service),
+        }) => portman_status(socket, service),
     }
 }
 

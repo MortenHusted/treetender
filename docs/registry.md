@@ -34,7 +34,13 @@ The primary purpose is to account for resources attached to a tree/lane while ex
 
 Use shared/borrowed references when an external tool owns the lifecycle, even when the resource is dedicated to a single lane. Such references remain useful for discovery, usage relationships and cleanup protection. They do not require a TreeTender database driver. Invoke an existing tool only for capabilities the caller actually requests.
 
-Currently every resource declaration must still name an adapter. `register` stores the declaration without invoking it; live inspection can be unavailable while the declared relationship remains recorded. A native adapter-free resource record and import of external tool receipts are not implemented. Report these as accounting-interface gaps, rather than treating backend management as mandatory.
+A resource without `adapter` is passive. `register` stores its target, declared ownership/use, dependencies and optional `description`/`manager` notes. It creates no allocation claim or port reservation, including for primary checkouts. Status shows the declaration without fabricating a backend observation or reporting an intentionally absent observer as a failure. CLI/TUI label it passive; JSON omits the adapter and has no observation entry for it.
+
+Passive records are protected regardless of their declared ownership. Matching targets protect allocations used by other registered workspaces; a retained passive dependent protects its declared parent from cleanup. Registered uses remain protective until re-registration refreshes them, or an absent checkout's references are explicitly forgotten. Edit declarations and register again to update live associations. Targets must match the owning resource's declaration to express shared use of an external allocation.
+
+`depends_on` can describe relationships between passive resources without executing anything. If a managed operation or task requires a passive resource as a live prerequisite, planning blocks: declared association does not prove readiness. Configure an observation adapter and shared/borrowed ownership when actual readiness evidence is required for an externally managed resource.
+
+Removing an adapter from a managed declaration preserves its old allocation receipt. It grants no new effects and does not release the claim automatically. Restore an explicitly managed declaration for cleanup, or deliberately use reviewed `forget` to retain the backend instance and release the claim. Adding an adapter does not adopt an existing foreign instance. External receipt import is not implemented.
 
 ## Lifecycle flows
 

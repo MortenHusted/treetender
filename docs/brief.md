@@ -71,7 +71,7 @@ This scope is proposed for refinement, not a commitment to an implementation ord
 
 ## Further adoption decisions
 
-- How to represent passive resources without a required adapter, and accept externally issued allocation receipts without taking over their lifecycle. These accounting interfaces are not implemented yet.
+- How to accept externally issued allocation receipts without taking over their lifecycle. Adapter-free passive declarations are implemented; external receipt import remains open.
 
 - Which production database/storage providers should be supplied beyond the generic contract and disposable fixtures?
 - What ownership evidence should allow adopting existing live workspaces and Portman registrations?

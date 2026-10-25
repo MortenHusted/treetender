@@ -349,3 +349,47 @@ fn saved_build_plan_rejects_a_different_executable_on_path() {
     assert_eq!(error["error"]["code"], "stale_plan");
     assert!(!fixture.lane.join("ran-builder").exists());
 }
+
+#[test]
+fn passive_inventory_is_registered_visible_and_detached_without_backends() {
+    let f = Fixture::new();
+    fs::write(
+        f.lane.join("treetender.toml"),
+        include_str!("../examples/inventory.toml"),
+    )
+    .unwrap();
+    f.ok(&f.lane, &["register"]);
+    let status = f.ok(&f.lane, &["status"]);
+    assert_eq!(status["resources"], serde_json::json!([]));
+    assert_eq!(status["observations"], serde_json::json!({}));
+    assert_eq!(status["issues"], serde_json::json!([]));
+    let records = status["declarations"]["resources"].as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|r| r.get("adapter").is_none()));
+    let schema = f.ok(&f.lane, &["agent", "schema"]);
+    assert_eq!(
+        schema["resource_registration"]["passive"]["lifecycle_authority"],
+        false
+    );
+    let output = binary()
+        .arg("--repo")
+        .arg(&f.lane)
+        .arg("--state-dir")
+        .arg(&f.state)
+        .arg("status")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("passive"));
+    assert!(text.contains("manager: Docker Compose"));
+    assert!(text.contains("purpose: Test data dedicated to this lane"));
+    let clean = f.ok(&f.lane, &["plan", "clean"]);
+    assert_eq!(clean["steps"], serde_json::json!([]));
+    fs::write(f.lane.join("treetender.toml"), "version=1\n").unwrap();
+    f.ok(&f.lane, &["register"]);
+    assert_eq!(
+        f.ok(&f.lane, &["status"])["declarations"]["resources"],
+        serde_json::json!([])
+    );
+}

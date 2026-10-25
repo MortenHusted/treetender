@@ -35,7 +35,22 @@ pub struct Resource {
     pub target: String,
     #[serde(default)]
     pub ports: Vec<u16>,
-    pub adapter: Adapter,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<Adapter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manager: Option<String>,
+}
+
+impl Resource {
+    pub fn is_passive(&self) -> bool {
+        self.adapter.is_none()
+    }
+
+    pub fn is_reference(&self) -> bool {
+        self.is_passive() || self.ownership != Ownership::Owned
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -225,24 +240,29 @@ impl Manifest {
             if r.ports.contains(&0) {
                 return Err(Error::new("manifest", "port zero cannot be reserved"));
             }
-            match &r.adapter {
-                Adapter::File {
+            match r.adapter.as_ref() {
+                None => {
+                    if r.target.trim().is_empty() {
+                        return Err(Error::new("manifest", "passive resource needs a target"));
+                    }
+                }
+                Some(Adapter::File {
                     source,
                     destination,
                     source_root,
                     ..
-                } => {
+                }) => {
                     relative(source)?;
                     writable_destination(destination)?;
                     if source == destination && *source_root == SourceRoot::Workspace {
                         return Err(Error::new("manifest", "source equals destination"));
                     }
                 }
-                Adapter::Script {
+                Some(Adapter::Script {
                     command,
                     capabilities,
                     timeout_secs,
-                } => {
+                }) => {
                     validate_command(command, *timeout_secs)?;
                     if r.target.trim().is_empty()
                         || !capabilities.iter().any(|c| c == "inspect")
@@ -257,11 +277,11 @@ impl Manifest {
                         ));
                     }
                 }
-                Adapter::Portman {
+                Some(Adapter::Portman {
                     command,
                     service,
                     socket,
-                } => {
+                }) => {
                     validate_command(command, 30)?;
                     if service.trim().is_empty()
                         || service.starts_with('-')

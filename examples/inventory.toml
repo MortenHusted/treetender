@@ -1,0 +1,19 @@
+# Registration only: no backend commands, allocation claims or cleanup rights.
+version = 1
+
+[[resources]]
+id = "database-server"
+kind = "service"
+ownership = "shared"
+target = "docker:local/development-postgres"
+description = "Shared database host; preserve when retiring a lane"
+manager = "Docker Compose"
+ports = [5432]
+
+[[resources]]
+id = "test-database"
+kind = "data"
+target = "postgres:development/lane_{workspace_id}"
+depends_on = ["database-server"]
+description = "Test data dedicated to this lane"
+manager = "Repository setup/cleanup scripts"

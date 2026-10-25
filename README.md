@@ -18,7 +18,19 @@ Git remains responsible for repositories and worktrees. Portman or another super
 
 `register` records checkout identity and declared resource relationships without invoking adapters, creating resources or taking over their lifecycle. Use `borrowed` or `shared` declarations for resources managed elsewhere. `list` discovers workspaces; `status` distinguishes declarations and managed receipts from live observations. A recorded association alone does not prove backend existence, health or cleanup authority.
 
-The current manifest schema still requires an adapter on each resource, including references. An observation adapter may wrap existing tooling; it needs no mutation capabilities. Accounting-only registration without any adapter, and direct import of externally issued allocation receipts, remain interface gaps. Do not interpret those gaps as a requirement to build database-management features.
+Omit `adapter` for a passive resource. It records a relationship without connecting to a backend, claiming an allocation or reserving ports. Add optional `description` and `manager` notes to record its purpose and lifecycle responsibility:
+
+```toml
+version = 1
+[[resources]]
+id = "test-database"
+kind = "data"
+target = "postgres:development/lane_{workspace_id}"
+description = "Test data for this lane"
+manager = "Existing workspace scripts"
+```
+
+After saving this in `treetender.toml` (or the ignored local overlay), run `treetender register`, then `treetender status` or `treetender tui`. See the [inventory example](examples/inventory.toml) for a database associated with a shared Docker host. Passive declarations remain protected even with `ownership = "owned"`; that field records affiliation, not execution authority. Direct import of externally issued allocation receipts is not implemented.
 
 ## Use
 

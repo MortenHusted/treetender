@@ -68,7 +68,7 @@ fn prerequisite(
     if proof.presence != Presence::Present {
         return Err(Error::new("prerequisite", "provider must prove present"));
     }
-    if r.ownership == Ownership::Owned
+    if !r.is_reference()
         && receipt.is_none_or(|c| {
             !matches!(c.state.as_str(), "prepared" | "active") || !proof_matches(&proof, c)
         })
@@ -121,7 +121,7 @@ impl Engine {
         for old in g.claims(Some(&primary.id))? {
             if old.state == "reserved"
                 && !manifest.resources.iter().any(|r| {
-                    r.ownership == Ownership::Owned
+                    !r.is_reference()
                         && old.declaration == *r
                         && old.target == adapter::target(&primary, r)
                 })
@@ -131,11 +131,7 @@ impl Engine {
         }
         g.save_workspace(&primary)?;
         g.save_declarations(&primary, &manifest)?;
-        for r in manifest
-            .resources
-            .iter()
-            .filter(|r| r.ownership == Ownership::Owned)
-        {
+        for r in manifest.resources.iter().filter(|r| !r.is_reference()) {
             let target = adapter::target(&primary, r);
             if let Some(other) = g.claim(&target)? {
                 if other.workspace_id != primary.id || other.resource_id != r.id {
@@ -228,6 +224,9 @@ impl Engine {
             }
         }
         for r in &manifest.resources {
+            if r.is_passive() {
+                continue;
+            }
             let receipt = resources.iter().find(|c| c.resource_id == r.id);
             match adapter::inspect(
                 &w,
@@ -317,7 +316,7 @@ impl Engine {
             .resources
             .iter()
             .chain(&stored_declarations.resources)
-            .filter(|r| r.ownership != Ownership::Owned)
+            .filter(|r| r.is_reference())
             .map(|r| r.id.clone())
             .collect();
         let mut primary_targets = BTreeSet::new();
@@ -332,6 +331,21 @@ impl Engine {
             }
         }
         if matches!(operation, Operation::Clean | Operation::Stop) {
+            // Registered uses keep their dependencies protected until registration refreshes them.
+            for reference in stored_declarations
+                .resources
+                .iter()
+                .filter(|r| r.is_reference())
+            {
+                if let Some(current) = manifest.resources.iter_mut().find(|r| r.id == reference.id)
+                {
+                    current.depends_on.extend(reference.depends_on.clone());
+                    current.depends_on.sort();
+                    current.depends_on.dedup();
+                } else {
+                    manifest.resources.push(reference.clone());
+                }
+            }
             for receipt in &receipts {
                 // Cleanup always uses the allocating adapter, never a changed declaration.
                 let mut original = receipt.declaration.clone();
@@ -375,9 +389,7 @@ impl Engine {
                 let current = self.resolved_manifest(&other)?;
                 for r in stored.resources.iter().chain(&current.resources) {
                     let target = adapter::target(&other, r);
-                    if (other.primary || r.ownership != Ownership::Owned)
-                        && scoped_targets.contains(&target)
-                    {
+                    if (other.primary || r.is_reference()) && scoped_targets.contains(&target) {
                         primary_targets.insert(target.clone());
                         reference_material
                             .entry(other.id.clone())
@@ -455,7 +467,7 @@ impl Engine {
         let prerequisites: BTreeSet<String> = manifest
             .resources
             .iter()
-            .filter(|r| wanted.contains(&r.id))
+            .filter(|r| wanted.contains(&r.id) && !r.is_passive())
             .flat_map(|r| r.depends_on.clone())
             .chain(
                 manifest
@@ -512,9 +524,11 @@ impl Engine {
                 let receipt = receipts.iter().find(|c| c.resource_id == id);
                 let exclude = if selected(&plan.selectors.retain, &r.id, &r.kind) {
                     Some("explicitly retained")
+                } else if r.is_passive() {
+                    Some("passive resource: lifecycle is externally managed")
                 } else if w.primary && matches!(operation, Operation::Clean | Operation::Stop) {
                     Some("primary workspace is protected")
-                } else if r.ownership != Ownership::Owned {
+                } else if r.is_reference() {
                     Some("shared/borrowed reference is protected")
                 } else if protected_declarations.contains(&r.id) {
                     Some("current declaration is a protected reference")
@@ -608,7 +622,7 @@ impl Engine {
                 };
                 plan.observations.insert(id.clone(), proof.clone());
                 if proof.presence == Presence::Missing
-                    && matches!(r.adapter, Adapter::Script { .. })
+                    && matches!(r.adapter, Some(Adapter::Script { .. }))
                     && receipt.is_some_and(|c| missing_external_blocks(c, operation))
                     && matches!(operation, Operation::Prepare | Operation::Clean)
                 {
@@ -691,11 +705,11 @@ impl Engine {
                     continue;
                 }
                 if operation == Operation::Prepare
-                    && let Adapter::File {
+                    && let Some(Adapter::File {
                         source,
                         source_root,
                         ..
-                    } = &r.adapter
+                    }) = &r.adapter
                 {
                     let source_path = match source_root {
                         SourceRoot::Workspace => w.path.clone(),
@@ -762,7 +776,7 @@ impl Engine {
                             .iter()
                             .any(|c| c.resource_id == r.id && c.state == "active")
                     } else {
-                        r.ownership != Ownership::Owned
+                        r.is_reference()
                             || receipts
                                 .iter()
                                 .any(|c| c.resource_id == r.id && c.state != "reserved")
@@ -784,7 +798,7 @@ impl Engine {
             {
                 continue;
             }
-            if let Adapter::Script { command, .. } = &r.adapter {
+            if let Some(Adapter::Script { command, .. }) = &r.adapter {
                 if checkout_current {
                     self.command_material(&w.path, command, &mut material)?;
                 } else {
@@ -887,7 +901,7 @@ impl Engine {
                 continue;
             }
             let receipt = receipts.iter().find(|r| r.resource_id == resource.id);
-            if receipt.is_none() && (!orphaned || resource.ownership == Ownership::Owned) {
+            if receipt.is_none() && (!orphaned || !resource.is_reference()) {
                 plan.blockers.push(format!(
                     "{} has no owned claim; edit and re-register a live reference instead",
                     resource.id
@@ -1066,7 +1080,7 @@ impl Engine {
             if orphaned {
                 declarations
                     .resources
-                    .retain(|r| r.id != step.id || r.ownership == Ownership::Owned);
+                    .retain(|r| r.id != step.id || !r.is_reference());
                 g.save_declarations(w, &declarations)?;
             }
             transaction.commit()?;
@@ -1085,7 +1099,7 @@ impl Engine {
             .iter()
             .find(|r| r.id == step.id)
             .ok_or_else(|| Error::new("plan", "missing resource"))?;
-        if resource.ownership != Ownership::Owned
+        if resource.is_reference()
             || (w.primary && matches!(step.action, Operation::Stop | Operation::Clean))
         {
             return Err(Error::new("protected", "resource is protected"));
@@ -1122,7 +1136,7 @@ impl Engine {
         if current.presence == Presence::Missing
             && previously_claimed
             && missing_external_blocks(&receipt, step.action)
-            && matches!(resource.adapter, Adapter::Script { .. })
+            && matches!(resource.adapter, Some(Adapter::Script { .. }))
             && matches!(step.action, Operation::Clean | Operation::Prepare)
         {
             return Err(Error::new(

@@ -1794,3 +1794,244 @@ fn moving_the_whole_repository_never_implies_its_workspaces_are_retired() {
     assert!(f.proof_file("whole-repository-move").exists());
     assert_eq!(f.engine.status(&w.id).unwrap().resources.len(), 1);
 }
+
+#[test]
+fn passive_inventory_has_no_observations_claims_or_lifecycle_effects() {
+    let f = Fixture::new();
+    f.manifest("[[resources]]\nid='server'\nkind='service'\ntarget='docker:shared-postgres'\nownership='shared'\nmanager='docker compose'\n[[resources]]\nid='database'\nkind='data'\ntarget='postgres:shared/lane_{workspace_id}'\ndepends_on=['server']\ndescription='Test data for this lane'\nmanager='existing workspace scripts'\n");
+    let w = f.register();
+    let status = f.engine.status(&w.id).unwrap();
+    assert!(status.resources.is_empty());
+    assert!(status.observations.is_empty());
+    assert!(status.issues.is_empty());
+    assert_eq!(status.declarations.resources.len(), 2);
+    let database = &status.declarations.resources[0];
+    assert_eq!(database.target, format!("postgres:shared/lane_{}", w.id));
+    assert_eq!(
+        database.description.as_deref(),
+        Some("Test data for this lane")
+    );
+    assert_eq!(
+        database.manager.as_deref(),
+        Some("existing workspace scripts")
+    );
+    for operation in [
+        Operation::Prepare,
+        Operation::Build,
+        Operation::Check,
+        Operation::Start,
+        Operation::Stop,
+        Operation::Clean,
+    ] {
+        let plan = f
+            .engine
+            .plan(&w.id, operation, Selectors::default())
+            .unwrap();
+        assert!(plan.steps.is_empty(), "{operation:?}");
+        assert!(
+            plan.blockers.is_empty(),
+            "{operation:?}: {:?}",
+            plan.blockers
+        );
+        assert!(f.engine.apply(&plan).unwrap().success);
+    }
+    assert!(f.engine.status(&w.id).unwrap().resources.is_empty());
+    assert!(f.mutations().is_empty());
+}
+
+#[test]
+fn primary_passive_inventory_does_not_reserve_ports_or_allocate() {
+    let f = Fixture::new();
+    fs::write(f.primary.join("treetender.toml"), "version=1\n[[resources]]\nid='external'\nkind='service'\ntarget='external:tracked-server'\nports=[4567]\n").unwrap();
+    let primary = f.engine.register(&f.primary).unwrap();
+    assert!(f.engine.status(&primary.id).unwrap().resources.is_empty());
+    f.manifest(&f.resource("owned", "service", "different-allocated-service", &[4567]));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    assert!(f.proof_file("different-allocated-service").exists());
+}
+
+#[test]
+fn passive_registered_use_protects_another_lane_until_orphan_reference_is_forgotten() {
+    let f = Fixture::new();
+    f.manifest(&f.resource("db", "data", "shared-passive-target", &[]));
+    let owner = f.register();
+    assert!(
+        f.apply(&owner, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let borrower = f.temp.path().join("borrower");
+    git(
+        &f.primary,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "borrower",
+            borrower.to_str().unwrap(),
+        ],
+    );
+    fs::write(
+        borrower.join("treetender.toml"),
+        "version=1\n[[resources]]\nid='reference'\nkind='data'\ntarget='shared-passive-target'\n",
+    )
+    .unwrap();
+    let w = f.engine.register(&borrower).unwrap();
+    let blocked = || {
+        f.engine
+            .plan(&owner.id, Operation::Clean, Fixture::only("db"))
+            .unwrap()
+    };
+    assert!(!blocked().blockers.is_empty());
+    fs::remove_dir_all(&borrower).unwrap();
+    git(&f.primary, &["worktree", "prune", "--expire", "now"]);
+    assert!(!blocked().blockers.is_empty());
+    let forget = f
+        .engine
+        .plan(&w.id, Operation::Forget, Fixture::only("reference"))
+        .unwrap();
+    assert!(forget.blockers.is_empty(), "{:?}", forget.blockers);
+    assert!(f.engine.apply(&forget).unwrap().success);
+    assert!(
+        f.engine
+            .status(&w.id)
+            .unwrap()
+            .declarations
+            .resources
+            .is_empty()
+    );
+    assert!(f.proof_file("shared-passive-target").exists());
+    assert!(f.engine.apply(&blocked()).unwrap().success);
+    assert!(!f.proof_file("shared-passive-target").exists());
+}
+
+#[test]
+fn switching_to_passive_retains_managed_receipt_and_blocks_effects() {
+    let f = Fixture::new();
+    f.manifest(&f.resource("db", "data", "previously-managed", &[]));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let receipt = f.engine.status(&w.id).unwrap().resources.remove(0);
+    let effects = f.mutations();
+    f.manifest("[[resources]]\nid='db'\nkind='data'\ntarget='previously-managed'\nmanager='manual cleanup'\n");
+    f.register();
+    let status = f.engine.status(&w.id).unwrap();
+    assert_eq!(status.resources[0], receipt);
+    assert!(status.observations.is_empty());
+    assert!(status.declarations.resources[0].is_passive());
+    for operation in [
+        Operation::Prepare,
+        Operation::Start,
+        Operation::Stop,
+        Operation::Clean,
+    ] {
+        let plan = f
+            .engine
+            .plan(&w.id, operation, Selectors::default())
+            .unwrap();
+        assert!(plan.steps.is_empty());
+        assert!(f.engine.apply(&plan).unwrap().success);
+    }
+    assert_eq!(f.mutations(), effects);
+    assert!(f.proof_file("previously-managed").exists());
+    assert!(f.apply(&w, Operation::Forget, Fixture::only("db")).success);
+    assert!(f.engine.status(&w.id).unwrap().resources.is_empty());
+    assert!(f.proof_file("previously-managed").exists());
+}
+
+#[test]
+fn passive_metadata_cannot_prove_a_managed_prerequisite_ready() {
+    let f = Fixture::new();
+    let reference =
+        "[[resources]]\nid='database'\nkind='data'\ntarget='postgres:external-test-db'\n";
+    let child = f
+        .file("context", "template", "context")
+        .replace("kind='file'", "kind='file'\ndepends_on=['database']");
+    f.manifest(&(reference.to_owned() + &child));
+    let w = f.register();
+    let plan = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    assert!(
+        plan.blockers
+            .iter()
+            .any(|b| b.contains("passive resource has no live observation"))
+    );
+    assert!(f.engine.apply(&plan).is_err());
+    assert!(!f.lane.join("context").exists());
+    assert!(f.mutations().is_empty());
+}
+
+#[test]
+fn passive_dependent_protects_parent_until_declarations_are_refreshed() {
+    let f = Fixture::new();
+    let parent = f.resource("server", "service", "owned-server", &[]);
+    f.manifest(&(parent.clone()+"[[resources]]\nid='database'\nkind='data'\ntarget='postgres:owned-server/lane'\ndepends_on=['server']\n"));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let blocked = || {
+        f.engine
+            .plan(&w.id, Operation::Clean, Fixture::only("server"))
+            .unwrap()
+    };
+    assert!(
+        blocked()
+            .blockers
+            .iter()
+            .any(|b| b.contains("retained database"))
+    );
+    f.manifest(&parent);
+    assert!(
+        blocked()
+            .blockers
+            .iter()
+            .any(|b| b.contains("retained database"))
+    );
+    f.register();
+    assert!(f.engine.apply(&blocked()).unwrap().success);
+    assert!(!f.proof_file("owned-server").exists());
+}
+
+#[test]
+fn passive_inventory_requires_a_locator_and_does_not_adopt_on_promotion() {
+    let f = Fixture::new();
+    f.manifest("[[resources]]\nid='db'\nkind='data'\n");
+    assert!(
+        f.engine
+            .register(&f.lane)
+            .unwrap_err()
+            .message
+            .contains("passive resource needs a target")
+    );
+    f.manifest(&f.resource("db", "data", "existing-foreign-db", &[]));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    assert!(f.apply(&w, Operation::Forget, Fixture::only("db")).success);
+    f.manifest("[[resources]]\nid='db'\nkind='data'\ntarget='existing-foreign-db'\n");
+    f.register();
+    f.manifest(&f.resource("db", "data", "existing-foreign-db", &[]));
+    f.register();
+    let plan = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    assert!(
+        plan.blockers
+            .iter()
+            .any(|b| b.contains("ownership/instance proof does not match"))
+    );
+    assert!(f.proof_file("existing-foreign-db").exists());
+}
