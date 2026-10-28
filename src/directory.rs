@@ -4,6 +4,7 @@
 use crate::adapter::{anchored_parent, cstring, dir_names, fd_file, parent};
 use crate::model::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -422,10 +423,17 @@ pub(crate) fn usage(root: &Path, path: &str) -> Result<Option<u64>> {
         return Ok(None);
     };
     let device = directory.metadata()?.dev();
-    tree_bytes(&directory, device, 0).map(Some)
+    tree_bytes(&directory, device, 0, &mut HashSet::new()).map(Some)
 }
 
-fn tree_bytes(directory: &File, device: u64, depth: usize) -> Result<u64> {
+/// Every leaf shares the walk's device, so an inode number identifies a hard-linked
+/// file, and its blocks count once.
+fn tree_bytes(
+    directory: &File,
+    device: u64,
+    depth: usize,
+    linked: &mut HashSet<u64>,
+) -> Result<u64> {
     let mut total = directory.metadata()?.blocks() * 512;
     if depth > MAX_DEPTH {
         return Ok(total);
@@ -437,7 +445,7 @@ fn tree_bytes(directory: &File, device: u64, depth: usize) -> Result<u64> {
             if let Some(sub) = open_directory(directory, &child, "owned directory")?
                 && sub.metadata()?.dev() == device
             {
-                total += tree_bytes(&sub, device, depth + 1)?;
+                total += tree_bytes(&sub, device, depth + 1, linked)?;
             }
             continue;
         }
@@ -453,7 +461,10 @@ fn tree_bytes(directory: &File, device: u64, depth: usize) -> Result<u64> {
         } == 0
         {
             // SAFETY: successful fstatat initialized stat.
-            total += unsafe { stat.assume_init() }.st_blocks as u64 * 512;
+            let stat = unsafe { stat.assume_init() };
+            if stat.st_nlink < 2 || linked.insert(stat.st_ino) {
+                total += stat.st_blocks as u64 * 512;
+            }
         }
     }
     Ok(total)
@@ -484,6 +495,18 @@ mod tests {
         crate::git::clean_environment(&mut git);
         assert!(git.status().unwrap().success());
         (temp, root)
+    }
+
+    #[test]
+    fn usage_counts_hard_linked_files_once() {
+        let (_temp, root) = checkout();
+        let w = workspace(&root);
+        prepare(&w, "out", "out", &uuid::Uuid::new_v4().to_string()).unwrap();
+        std::fs::create_dir(root.join("out/deps")).unwrap();
+        std::fs::write(root.join("out/deps/binary"), vec![7u8; 256 * 1024]).unwrap();
+        let before = usage(&root, "out").unwrap().unwrap();
+        std::fs::hard_link(root.join("out/deps/binary"), root.join("out/binary")).unwrap();
+        assert_eq!(usage(&root, "out").unwrap().unwrap(), before);
     }
 
     #[test]
