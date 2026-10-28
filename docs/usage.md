@@ -93,7 +93,7 @@ treetender plan clean --only cargo-target --out clean.json
 treetender apply clean.json
 ```
 
-Adopt only accepts an ignored, untracked real directory in a linked workspace. `adopt --apply` requires `--expect-fingerprint`, like clean and forget. See [owned directories](adapters.md#owned-directories).
+Adopt only accepts an ignored, untracked real directory in a linked workspace, or a [PostgreSQL database](adapters.md#postgresql-databases) whose name contains the workspace's `{workspace_ident}`. `adopt --apply` requires `--expect-fingerprint`, like clean and forget. See [owned directories](adapters.md#owned-directories).
 
 ## Builds and checks
 

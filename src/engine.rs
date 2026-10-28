@@ -467,6 +467,10 @@ impl Engine {
     fn resolved_manifest(&self, w: &Workspace) -> Result<Manifest> {
         let mut m = self.loaded_manifest(w)?.unwrap_or_default();
         for r in &mut m.resources {
+            if let Some(Adapter::Postgres { database, .. }) = &mut r.adapter {
+                *database = w.substitute(database)?;
+                crate::postgres::valid_database(database)?;
+            }
             r.target = w.substitute(&r.target)?;
             if r.target.contains(['{', '}']) {
                 return Err(Error::new("manifest", "unknown target placeholder"));
@@ -849,7 +853,7 @@ impl Engine {
                     continue;
                 }
                 if proof.presence == Presence::Missing
-                    && matches!(r.adapter, Some(Adapter::Script { .. }))
+                    && r.adapter.as_ref().is_some_and(Adapter::is_external)
                     && receipt.is_some_and(|c| missing_external_blocks(c, operation))
                     && matches!(operation, Operation::Prepare | Operation::Clean)
                 {
@@ -1044,6 +1048,9 @@ impl Engine {
                 && !plan.observations.contains_key(&r.id)
             {
                 continue;
+            }
+            if let Some(Adapter::Postgres { command, .. }) = &r.adapter {
+                self.command_material(&self.registry.recovery_dir, command, &mut material)?;
             }
             if let Some(Adapter::Script { command, .. }) = &r.adapter {
                 if checkout_current {
@@ -1418,7 +1425,7 @@ impl Engine {
         if current.presence == Presence::Missing
             && previously_claimed
             && missing_external_blocks(&receipt, step.action)
-            && matches!(resource.adapter, Some(Adapter::Script { .. }))
+            && resource.adapter.as_ref().is_some_and(Adapter::is_external)
             && matches!(step.action, Operation::Clean | Operation::Prepare)
         {
             return Err(Error::new(

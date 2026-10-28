@@ -433,6 +433,20 @@ pub(crate) fn target(w: &Workspace, resource: &Resource) -> String {
     match resource.adapter.as_ref() {
         Some(Adapter::File { destination, .. }) => format!("file:{}:{destination}", w.id),
         Some(Adapter::Directory { path }) => format!("dir:{}:{path}", w.id),
+        Some(Adapter::Postgres {
+            database,
+            service,
+            host,
+            port,
+            ..
+        }) => {
+            let endpoint = match (service, host) {
+                (Some(service), _) => format!("service={service}"),
+                (None, Some(host)) => format!("{host}:{}", port.unwrap_or(5432)),
+                (None, None) => "default".into(),
+            };
+            format!("postgres:{endpoint}/{database}")
+        }
         _ => format!("external:{}", resource.target),
     }
 }
@@ -544,7 +558,7 @@ pub(crate) fn supports(resource: &Resource, action: &str) -> bool {
         Some(Adapter::File { .. }) => ["inspect", "prepare", "destroy"].contains(&action),
         Some(Adapter::Script { capabilities, .. }) => capabilities.iter().any(|c| c == action),
         Some(Adapter::Portman { .. }) => action == "inspect",
-        Some(Adapter::Directory { .. }) => {
+        Some(Adapter::Directory { .. } | Adapter::Postgres { .. }) => {
             ["inspect", "prepare", "destroy", "adopt"].contains(&action)
         }
     }
@@ -554,6 +568,7 @@ pub(crate) fn supports(resource: &Resource, action: &str) -> bool {
 pub(crate) fn adoptable(w: &Workspace, resource: &Resource) -> Result<()> {
     match resource.adapter.as_ref() {
         Some(Adapter::Directory { path }) => crate::directory::adoptable(w, path),
+        Some(Adapter::Postgres { database, .. }) => crate::postgres::adoptable(w, database),
         _ => Err(Error::new(
             "capability",
             "adapter cannot adopt existing state",
@@ -762,6 +777,20 @@ pub(crate) fn invoke(
                 "adopt" => crate::directory::adopt(w, &resource.id, path, token, receipt),
                 "destroy" => crate::directory::destroy(&w.path, path, token, receipt),
                 _ => Err(Error::new("capability", "directory action unsupported")),
+            }
+        }
+        Some(adapter @ Adapter::Postgres { .. }) => {
+            let server = crate::postgres::Server::of(adapter).expect("postgres adapter");
+            match action {
+                "inspect" => crate::postgres::inspect(&server, w, recovery_dir),
+                "prepare" => {
+                    crate::postgres::prepare(&server, w, recovery_dir, &resource.id, token)
+                }
+                "adopt" => {
+                    crate::postgres::adopt(&server, w, recovery_dir, &resource.id, token, receipt)
+                }
+                "destroy" => crate::postgres::destroy(&server, w, recovery_dir, token, receipt),
+                _ => Err(Error::new("capability", "postgres action unsupported")),
             }
         }
     }

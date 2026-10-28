@@ -436,12 +436,12 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             "operations":["prepare","build","check","start","stop","clean","forget","adopt"],
             "resource_registration":{
                 "passive":{"adapter":"omit","required":["id","kind","target"],"kinds":["file","data","service","agent","custom"],"optional":["ownership","depends_on","ports","description","manager"],"live_observation":false,"allocation_claim":false,"lifecycle_authority":false},
-                "managed":{"adapter":"explicit configuration","types":["file","directory","script","portman"],"allocation_proof":"required for effects"},
+                "managed":{"adapter":"explicit configuration","types":["file","directory","postgres","script","portman"],"allocation_proof":"required for effects"},
                 "refresh":"edit declarations and register again; orphaned references can be explicitly forgotten"
             },
             "selectors":{"only":"repeat --only RESOURCE_OR_TASK","retain":"repeat --keep RESOURCE"},
             "workflow":["inspect","register explicitly","plan OP --out plan.json","review blockers, effects and exclusions","apply plan.json"],
-            "safety":{"stop":"retain checkout and persistent data","clean":"verified owned selections only; reviewed fingerprint required for --apply","forget":"explicit --only resources; release claims/ports while retaining instances and audit receipts","adopt":"explicit --only resources; mark existing unmarked state (directory: Git-ignored, untracked) as owned after review; reviewed fingerprint required for --apply","primary":"protected","force_bypass":false,"scripts":"trusted executable code; not sandboxed"},
+            "safety":{"stop":"retain checkout and persistent data","clean":"verified owned selections only; reviewed fingerprint required for --apply","forget":"explicit --only resources; release claims/ports while retaining instances and audit receipts","adopt":"explicit --only resources; mark existing unmarked state (directory: Git-ignored, untracked; postgres: name contains the workspace ident) as owned after review; reviewed fingerprint required for --apply","primary":"protected","force_bypass":false,"scripts":"trusted executable code; not sandboxed"},
             "resources":"agent resources",
             "adapter_contract":"treetender://adapter"
         })),
