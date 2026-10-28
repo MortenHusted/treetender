@@ -82,6 +82,92 @@ fn prerequisite(
     Ok(proof)
 }
 
+fn valid_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    if name.len() > 40
+        || !chars
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || name.ends_with('-')
+    {
+        return Err(Error::new(
+            "invalid_name",
+            "workspace names use 1-40 lowercase letters, digits and inner hyphens",
+        ));
+    }
+    Ok(())
+}
+
+/// A workspace keeps its first name, so names derived from it survive moves.
+/// New names are unique within the repository.
+fn workspace_name(
+    known: &[Workspace],
+    id: &str,
+    repository_id: &str,
+    path: &Path,
+    requested: Option<&str>,
+) -> Result<String> {
+    if let Some(existing) = known.iter().find(|w| w.id == id && !w.name.is_empty()) {
+        if requested.is_some_and(|name| name != existing.name) {
+            return Err(Error::new(
+                "name_fixed",
+                format!(
+                    "workspace is already named {}; names are fixed at first registration",
+                    existing.name
+                ),
+            ));
+        }
+        return Ok(existing.name.clone());
+    }
+    let taken = |name: &str| {
+        known
+            .iter()
+            .any(|w| w.id != id && w.repository_id == repository_id && w.name == name)
+    };
+    if let Some(name) = requested {
+        if taken(name) {
+            return Err(Error::new(
+                "name_conflict",
+                format!("another workspace of this repository is named {name}"),
+            ));
+        }
+        return Ok(name.into());
+    }
+    let mut base = String::new();
+    for c in path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .chars()
+    {
+        if c.is_ascii_alphanumeric() {
+            base.push(c.to_ascii_lowercase());
+        } else if !base.is_empty() && !base.ends_with('-') {
+            base.push('-');
+        }
+    }
+    let base = match base.trim_end_matches('-') {
+        "" => "workspace",
+        trimmed => trimmed,
+    };
+    let truncated = |len: usize| {
+        base.chars()
+            .take(len)
+            .collect::<String>()
+            .trim_end_matches('-')
+            .to_owned()
+    };
+    let mut candidate = truncated(40);
+    let mut suffix = 2;
+    while taken(&candidate) {
+        let tail = format!("-{suffix}");
+        candidate = format!("{}{tail}", truncated(40 - tail.len()));
+        suffix += 1;
+    }
+    Ok(candidate)
+}
+
 impl Engine {
     /// Initialize private state. This does not discover or register any checkout.
     pub fn open(state_dir: impl AsRef<Path>) -> Result<Self> {
@@ -99,17 +185,27 @@ impl Engine {
             primary_path: d.primary_path.clone(),
             primary: d.git_dir == d.common_dir,
             workspace: g.current_workspace(&d)?,
-            manifest: Manifest::load(&d.path)?,
+            manifest: Manifest::load(&d.path, &d.primary_path)?,
         })
     }
     pub fn register(&self, path: &Path) -> Result<Workspace> {
+        self.register_named(path, None)
+    }
+    /// Registers a checkout, naming it on first registration. A name is fixed
+    /// afterwards; omit `name` to derive one from the checkout directory.
+    pub fn register_named(&self, path: &Path, name: Option<&str>) -> Result<Workspace> {
         let g = self.registry.lock()?;
         let d = git::discover(path)?;
         // Validate before writing any Git identity markers.
-        Manifest::load(&d.path)?;
+        Manifest::load(&d.path, &d.primary_path)?;
+        if let Some(name) = name {
+            valid_name(name)?;
+        }
         let transaction =
             rusqlite::Transaction::new_unchecked(&g.db, rusqlite::TransactionBehavior::Immediate)?;
+        let known = g.workspaces()?;
         let repo = git::identity(&d.common_dir, true)?.unwrap();
+        let registering_primary = d.git_dir == d.common_dir;
         let primary = Workspace {
             id: repo.clone(),
             repository_id: repo.clone(),
@@ -117,6 +213,13 @@ impl Engine {
             git_dir: d.common_dir.clone(),
             common_dir: d.common_dir.clone(),
             primary: true,
+            name: workspace_name(
+                &known,
+                &repo,
+                &repo,
+                &d.primary_path,
+                name.filter(|_| registering_primary),
+            )?,
         };
         let manifest = self.resolved_manifest(&primary)?;
         for old in g.claims(Some(&primary.id))? {
@@ -167,6 +270,7 @@ impl Engine {
         }
         let id = git::identity(&d.git_dir, true)?.unwrap();
         let w = Workspace {
+            name: workspace_name(&known, &id, &repo, &d.path, name)?,
             id,
             repository_id: repo,
             path: d.path,
@@ -181,6 +285,10 @@ impl Engine {
     }
     pub fn list(&self) -> Result<Vec<Workspace>> {
         self.registry.lock()?.workspaces()
+    }
+    /// The registered record for a checkout path or workspace ID.
+    pub fn workspace(&self, workspace: &str) -> Result<Workspace> {
+        self.registry.lock()?.resolve(Path::new(workspace))
     }
     pub fn status(&self, workspace: &str) -> Result<Status> {
         let g = self.registry.lock()?;
@@ -294,15 +402,12 @@ impl Engine {
             Err(e) => return Err(e),
         };
         let mut m = if current {
-            Manifest::load(&w.path)?
+            Manifest::load(&w.path, &git::discover(&w.path)?.primary_path)?
         } else {
             Manifest::default()
         };
         for r in &mut m.resources {
-            r.target = r
-                .target
-                .replace("{workspace_id}", &w.id)
-                .replace("{repository_id}", &w.repository_id);
+            r.target = w.substitute(&r.target)?;
             if r.target.contains(['{', '}']) {
                 return Err(Error::new("manifest", "unknown target placeholder"));
             }
@@ -537,6 +642,13 @@ impl Engine {
                 if w.path.join(name).exists() {
                     material.insert(name.into(), adapter::file_snapshot(&w.path, name)?);
                 }
+            }
+            let overlay = ".treetender.local.toml";
+            if !w.primary && d.primary_path.join(overlay).exists() {
+                material.insert(
+                    format!("primary:{overlay}"),
+                    adapter::file_snapshot(&d.primary_path, overlay)?,
+                );
             }
         } else if !matches!(operation, Operation::Clean | Operation::Stop) {
             blockers.push(
@@ -1155,7 +1267,13 @@ impl Engine {
         }
         if let Some(task) = plan.manifest.tasks.iter().find(|t| t.id == step.id) {
             let inputs = crate::build::input_fingerprints(&w.path, task)?;
-            adapter::run(&task.command, &w.path, None, task.timeout_secs)?;
+            adapter::run(
+                &task.command,
+                &w.path,
+                &w.environment(),
+                None,
+                task.timeout_secs,
+            )?;
             return Ok(Some(crate::build::completed(&w.path, task, inputs)?));
         }
         let resource = plan

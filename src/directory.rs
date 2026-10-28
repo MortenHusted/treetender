@@ -471,6 +471,7 @@ mod tests {
             git_dir: root.join(".git"),
             common_dir: root.join(".git"),
             primary: false,
+            name: "lane".into(),
         }
     }
 

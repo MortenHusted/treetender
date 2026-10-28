@@ -10,5 +10,5 @@ pub mod model;
 mod registry;
 
 pub use engine::Engine;
-pub use manifest::{Adapter, FileMode, Manifest, Resource, SourceRoot, Task, TaskKind};
+pub use manifest::{Adapter, FileMode, Manifest, Resource, Scope, SourceRoot, Task, TaskKind};
 pub use model::*;

@@ -126,7 +126,7 @@ const PROVIDER: &str = r#"import sys,json,os,hashlib,uuid,signal
 q=json.load(sys.stdin)
 base=os.path.dirname(os.path.abspath(__file__))
 os.makedirs(base+'/instances',exist_ok=True)
-with open(base+'/requests','a') as f:json.dump(dict(q,_cwd=os.getcwd()),f);f.write('\n')
+with open(base+'/requests','a') as f:json.dump(dict(q,_cwd=os.getcwd(),_lane=os.environ.get('TREETENDER_WORKSPACE_NAME')),f);f.write('\n')
 p=base+'/instances/'+hashlib.sha256(q['target'].encode()).hexdigest()+'.json'
 action=q['action']; rid=q['resource_id']
 if os.path.exists(base+'/unknown'):
@@ -2240,4 +2240,150 @@ fn foreign_marker_blocks_directory_cleanup_and_keeps_contents() {
     );
     assert!(f.lane.join("target/foreign").exists());
     assert!(f.lane.join("original/.treetender-owner.json").exists());
+}
+
+fn ids(manifest: &Manifest) -> Vec<&str> {
+    manifest.resources.iter().map(|r| r.id.as_str()).collect()
+}
+
+#[test]
+fn primary_private_overlay_reaches_linked_lanes_by_scope() {
+    let f = Fixture::new();
+    fs::write(
+        f.primary.join(".treetender.local.toml"),
+        "version=1\n[[resources]]\nid='lane-db'\nkind='data'\nscope='linked'\ntarget='db:app_{workspace_ident}'\n[[resources]]\nid='primary-only'\nkind='data'\nscope='primary'\ntarget='db:primary'\n[[resources]]\nid='db-host'\nkind='service'\nownership='shared'\ntarget='docker:db-host'\n",
+    )
+    .unwrap();
+    f.manifest("[[resources]]\nid='lane-file'\nkind='data'\ntarget='lane-file'\n");
+    fs::write(
+        f.lane.join(".treetender.local.toml"),
+        "version=1\n[[resources]]\nid='db-host'\nkind='service'\nownership='shared'\ntarget='docker:lane-host'\n",
+    )
+    .unwrap();
+    let lane = f.engine.inspect(&f.lane).unwrap().manifest;
+    assert_eq!(ids(&lane), ["db-host", "lane-db", "lane-file"]);
+    assert_eq!(lane.resources[0].target, "docker:lane-host");
+    let primary = f.engine.inspect(&f.primary).unwrap().manifest;
+    assert_eq!(ids(&primary), ["db-host", "primary-only"]);
+
+    let w = f.engine.register_named(&f.lane, Some("feature-x")).unwrap();
+    let declared = f.engine.status(&w.id).unwrap().declarations;
+    let db = declared
+        .resources
+        .iter()
+        .find(|r| r.id == "lane-db")
+        .unwrap();
+    assert_eq!(db.target, "db:app_feature_x");
+
+    // The inherited overlay is plan material for the lane.
+    let plan = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    let overlay = fs::read_to_string(f.primary.join(".treetender.local.toml")).unwrap();
+    fs::write(
+        f.primary.join(".treetender.local.toml"),
+        format!("{overlay}# reviewed later\n"),
+    )
+    .unwrap();
+    assert_eq!(f.engine.apply(&plan).unwrap_err().code, "stale_plan");
+}
+
+#[test]
+fn workspace_names_are_fixed_unique_and_survive_moves() {
+    let f = Fixture::new();
+    f.manifest("[[resources]]\nid='db'\nkind='data'\ntarget='db:app_{workspace_ident}'\n");
+    let w = f.register();
+    assert_eq!(w.name, "lane");
+    assert_eq!(
+        f.engine
+            .workspace(f.primary.to_str().unwrap())
+            .unwrap()
+            .name,
+        "repo"
+    );
+    assert_eq!(
+        f.engine
+            .register_named(&f.lane, Some("other"))
+            .unwrap_err()
+            .code,
+        "name_fixed"
+    );
+    assert_eq!(f.engine.register_named(&f.lane, Some("lane")).unwrap(), w);
+
+    let nested = f.temp.path().join("nested");
+    fs::create_dir(&nested).unwrap();
+    let second = nested.join("lane");
+    git(
+        &f.primary,
+        &["worktree", "add", "-b", "second", second.to_str().unwrap()],
+    );
+    assert_eq!(f.engine.register(&second).unwrap().name, "lane-2");
+    let third = f.temp.path().join("Third Lane!");
+    git(
+        &f.primary,
+        &["worktree", "add", "-b", "third", third.to_str().unwrap()],
+    );
+    assert_eq!(
+        f.engine
+            .register_named(&third, Some("lane"))
+            .unwrap_err()
+            .code,
+        "name_conflict"
+    );
+    assert_eq!(
+        f.engine
+            .register_named(&third, Some("Bad_Name"))
+            .unwrap_err()
+            .code,
+        "invalid_name"
+    );
+    assert_eq!(f.engine.register(&third).unwrap().name, "third-lane");
+
+    let moved = f.temp.path().join("moved");
+    git(
+        &f.primary,
+        &[
+            "worktree",
+            "move",
+            f.lane.to_str().unwrap(),
+            moved.to_str().unwrap(),
+        ],
+    );
+    let again = f.engine.register(&moved).unwrap();
+    assert_eq!(
+        (again.id.as_str(), again.name.as_str()),
+        (w.id.as_str(), "lane")
+    );
+    let declared = f.engine.status(&w.id).unwrap().declarations;
+    assert_eq!(declared.resources[0].target, "db:app_lane");
+}
+
+#[test]
+fn tasks_and_script_adapters_receive_lane_values() {
+    let f = Fixture::new();
+    f.manifest(&format!(
+        "{}[[tasks]]\nid='env'\nkind='build'\ncommand=['sh','-c','env | grep ^TREETENDER_ | sort > lane.env']\noutputs=['lane.env']\n",
+        f.resource("db", "data", "db:{workspace_name}", &[])
+    ));
+    let w = f.engine.register_named(&f.lane, Some("feature-x")).unwrap();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    assert!(f.apply(&w, Operation::Build, Selectors::default()).success);
+    let env = fs::read_to_string(f.lane.join("lane.env")).unwrap();
+    for line in [
+        format!("TREETENDER_WORKSPACE_ID={}", w.id),
+        "TREETENDER_WORKSPACE_NAME=feature-x".into(),
+        "TREETENDER_WORKSPACE_IDENT=feature_x".into(),
+        format!("TREETENDER_REPOSITORY_ID={}", w.repository_id),
+    ] {
+        assert!(env.lines().any(|l| l == line), "{line} missing from {env}");
+    }
+    let requests = fs::read_to_string(f.temp.path().join("requests")).unwrap();
+    assert!(requests.lines().all(|line| {
+        let request: serde_json::Value = serde_json::from_str(line).unwrap();
+        request["target"] == "db:feature-x" && request["_lane"] == "feature-x"
+    }));
 }

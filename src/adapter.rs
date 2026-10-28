@@ -630,6 +630,7 @@ pub(crate) fn invoke(
                 } else {
                     recovery_dir
                 },
+                &w.environment(),
                 Some(serde_json::to_vec(&input)?),
                 *timeout_secs,
             )?;
@@ -744,6 +745,7 @@ pub(crate) fn recovery_command(w: &Workspace, argv: &[String]) -> Result<Vec<Str
 pub(crate) fn run(
     argv: &[String],
     cwd: &Path,
+    env: &[(String, String)],
     input: Option<Vec<u8>>,
     seconds: u64,
 ) -> Result<Vec<u8>> {
@@ -756,6 +758,7 @@ pub(crate) fn run(
         .stderr(Stdio::piped())
         .process_group(0);
     crate::git::clean_environment(&mut cmd);
+    cmd.envs(env.iter().map(|(k, v)| (k, v)));
     let mut child = cmd
         .spawn()
         .map_err(|e| Error::new("adapter_unavailable", e.to_string()))?;
@@ -944,6 +947,7 @@ mod tests {
         let output = run(
             &["/bin/sh".into(), "-c".into(), "yes x".into()],
             temp.path(),
+            &[],
             None,
             3,
         )
@@ -952,6 +956,7 @@ mod tests {
         let timeout = run(
             &["/bin/sh".into(), "-c".into(), "sleep 5 & exit 0".into()],
             temp.path(),
+            &[],
             None,
             1,
         )

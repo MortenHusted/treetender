@@ -27,7 +27,13 @@ pub enum Command {
     /// Discover Git identity and configuration without registering resources.
     Inspect,
     /// Register this checkout; never claim existing external resources.
-    Register,
+    Register {
+        /// Name a newly registered workspace (default: from its directory). Fixed afterwards.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Print lane values (workspace ID, name, path) as dotenv lines for tools.
+    Env,
     /// Inspect the selected workspace and its recorded resources.
     Status {
         /// Also report allocated bytes of directory resources (walks their trees).

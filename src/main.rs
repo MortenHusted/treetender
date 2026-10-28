@@ -74,22 +74,37 @@ fn run(cli: Cli) -> Result<()> {
     let workspace = cli.repo.to_string_lossy().into_owned();
     let value = match cli.command {
         Command::Inspect => serde_json::to_value(engine.inspect(&cli.repo)?)?,
-        Command::Register => {
-            let registered = engine.register(&cli.repo)?;
+        Command::Register { name } => {
+            let registered = engine.register_named(&cli.repo, name.as_deref())?;
             if !cli.json {
                 println!(
-                    "Registered {}{}\nWorkspace {}",
+                    "Registered {}{}\nWorkspace {} ({})",
                     registered.path.display(),
                     if registered.primary {
                         " [primary: protected]"
                     } else {
                         ""
                     },
+                    registered.name,
                     registered.id
                 );
                 return Ok(());
             }
             serde_json::to_value(registered)?
+        }
+        Command::Env => {
+            let environment = engine.workspace(&workspace)?.environment();
+            if !cli.json {
+                for (key, value) in &environment {
+                    println!("{key}={}", dotenv_value(value));
+                }
+                return Ok(());
+            }
+            serde_json::to_value(
+                environment
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            )?
         }
         Command::Status { usage } => {
             let status = engine.status(&workspace)?;
@@ -159,8 +174,9 @@ fn run(cli: Cli) -> Result<()> {
             if !cli.json {
                 for workspace in &workspaces {
                     println!(
-                        "{}  {}{}",
+                        "{}  {}  {}{}",
                         workspace.id,
+                        workspace.name,
                         workspace.path.display(),
                         if workspace.primary {
                             " [primary: protected]"
@@ -344,6 +360,19 @@ fn output(value: impl Serialize, structured: bool) -> Result<()> {
     Ok(())
 }
 
+/// Plain values stay bare; anything else is single-quoted for dotenv and sh.
+fn dotenv_value(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:@".contains(c))
+    {
+        value.into()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
 fn human_bytes(bytes: u64) -> String {
     let mut value = bytes as f64;
     for unit in ["B", "KiB", "MiB", "GiB"] {
@@ -399,8 +428,8 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             "protocol":"treetender-cli/v1",
             "output":{"version":1,"ok":"boolean","result":"command-specific JSON","error":{"code":"stable error code","message":"human explanation"}},
             "global_flags":["--repo PATH","--state-dir PATH","--json"],
-            "read_commands":["inspect","status [--usage]","list","history","plan OP","agent schema","agent resources","agent read URI"],
-            "write_commands":["init","register","apply FILE","OP --apply"],
+            "read_commands":["inspect","status [--usage]","env","list","history","plan OP","agent schema","agent resources","agent read URI"],
+            "write_commands":["init","register [--name NAME]","apply FILE","OP --apply"],
             "operations":["prepare","build","check","start","stop","clean","forget","adopt"],
             "resource_registration":{
                 "passive":{"adapter":"omit","required":["id","kind","target"],"kinds":["file","data","service","agent","custom"],"optional":["ownership","depends_on","ports","description","manager"],"live_observation":false,"allocation_claim":false,"lifecycle_authority":false},
