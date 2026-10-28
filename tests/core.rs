@@ -2035,3 +2035,209 @@ fn passive_inventory_requires_a_locator_and_does_not_adopt_on_promotion() {
     );
     assert!(f.proof_file("existing-foreign-db").exists());
 }
+
+fn directory(id: &str, path: &str) -> String {
+    format!(
+        "[[resources]]\nid='{id}'\nkind='file'\n[resources.adapter]\ntype='directory'\npath='{path}'\n"
+    )
+}
+
+#[test]
+fn owned_directory_is_created_retained_on_stop_and_removed_only_on_clean() {
+    let f = Fixture::new();
+    f.manifest(&directory("cargo-target", "target"));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    assert!(f.lane.join("target/.treetender-owner.json").is_file());
+    fs::create_dir_all(f.lane.join("target/debug/deps")).unwrap();
+    fs::write(f.lane.join("target/debug/deps/libapp.rlib"), "artifact").unwrap();
+    assert!(
+        f.engine
+            .plan(&w.id, Operation::Prepare, Selectors::default())
+            .unwrap()
+            .steps
+            .is_empty()
+    );
+    assert!(f.apply(&w, Operation::Stop, Selectors::default()).success);
+    let keep = Selectors {
+        only: vec![],
+        retain: vec!["cargo-target".into()],
+    };
+    assert!(f.apply(&w, Operation::Clean, keep).success);
+    assert!(f.lane.join("target/debug/deps/libapp.rlib").exists());
+    let usage = f.engine.usage(&w.id).unwrap();
+    assert!(usage["cargo-target"] > 0);
+    assert!(f.apply(&w, Operation::Clean, Selectors::default()).success);
+    assert!(!f.lane.join("target").exists());
+    assert!(f.lane.join("template").exists());
+    assert!(f.engine.status(&w.id).unwrap().resources.is_empty());
+    assert!(f.engine.usage(&w.id).unwrap().is_empty());
+}
+
+#[test]
+fn existing_build_output_needs_a_reviewed_adopt_of_ignored_state() {
+    let f = Fixture::new();
+    f.manifest(&directory("cargo-target", "target"));
+    fs::create_dir_all(f.lane.join("target/debug")).unwrap();
+    fs::write(f.lane.join("target/debug/app"), "binary").unwrap();
+    let w = f.register();
+    let prepare = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    assert!(
+        prepare
+            .blockers
+            .iter()
+            .any(|b| b.contains("adopt --only cargo-target")),
+        "{:?}",
+        prepare.blockers
+    );
+    let unignored = f
+        .engine
+        .plan(&w.id, Operation::Adopt, Fixture::only("cargo-target"))
+        .unwrap();
+    assert!(
+        unignored.blockers.iter().any(|b| b.contains("not ignored")),
+        "{:?}",
+        unignored.blockers
+    );
+    fs::write(f.lane.join(".gitignore"), "/target\n").unwrap();
+    let unselected = f
+        .engine
+        .plan(&w.id, Operation::Adopt, Selectors::default())
+        .unwrap();
+    assert!(unselected.blockers.iter().any(|b| b.contains("--only")));
+    let adopt = f
+        .engine
+        .plan(&w.id, Operation::Adopt, Fixture::only("cargo-target"))
+        .unwrap();
+    assert!(adopt.blockers.is_empty(), "{:?}", adopt.blockers);
+    assert_eq!(adopt.steps.len(), 1);
+    assert!(!adopt.steps[0].destructive);
+
+    // A directory replaced after review is a different instance.
+    fs::rename(f.lane.join("target"), f.lane.join("reviewed")).unwrap();
+    fs::create_dir(f.lane.join("target")).unwrap();
+    assert_eq!(f.engine.apply(&adopt).unwrap_err().code, "stale_plan");
+    assert!(!f.lane.join("target/.treetender-owner.json").exists());
+    fs::remove_dir(f.lane.join("target")).unwrap();
+    fs::rename(f.lane.join("reviewed"), f.lane.join("target")).unwrap();
+
+    assert!(f.engine.apply(&adopt).unwrap().success);
+    assert!(f.lane.join("target/.treetender-owner.json").is_file());
+    assert_eq!(
+        fs::read_to_string(f.lane.join("target/debug/app")).unwrap(),
+        "binary"
+    );
+    let again = f
+        .engine
+        .plan(&w.id, Operation::Adopt, Fixture::only("cargo-target"))
+        .unwrap();
+    assert!(again.blockers.iter().any(|b| b.contains("forget it")));
+    assert!(f.apply(&w, Operation::Clean, Selectors::default()).success);
+    assert!(!f.lane.join("target").exists());
+    assert!(f.lane.join(".gitignore").exists());
+}
+
+#[test]
+fn adopt_refuses_primary_tracked_and_symlinked_directories() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    fs::write(
+        f.primary.join("treetender.toml"),
+        format!("version=1\n{}", directory("out", "out")),
+    )
+    .unwrap();
+    fs::write(f.primary.join(".gitignore"), "/out\n").unwrap();
+    fs::create_dir(f.primary.join("out")).unwrap();
+    let primary = f.engine.register(&f.primary).unwrap();
+    let plan = f
+        .engine
+        .plan(&primary.id, Operation::Adopt, Fixture::only("out"))
+        .unwrap();
+    assert!(plan.blockers.iter().any(|b| b.contains("primary")));
+
+    f.manifest(&format!(
+        "{}{}",
+        directory("vendored", "vendor"),
+        directory("linked", "linked")
+    ));
+    fs::write(f.lane.join(".gitignore"), "/vendor\n/linked\n").unwrap();
+    fs::create_dir(f.lane.join("vendor")).unwrap();
+    fs::write(f.lane.join("vendor/lib.rs"), "tracked").unwrap();
+    git(&f.lane, &["add", "-f", "vendor/lib.rs"]);
+    let outside = f.temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), "keep").unwrap();
+    symlink(&outside, f.lane.join("linked")).unwrap();
+    let w = f.register();
+    let tracked = f
+        .engine
+        .plan(&w.id, Operation::Adopt, Fixture::only("vendored"))
+        .unwrap();
+    assert!(
+        tracked.blockers.iter().any(|b| b.contains("tracked")),
+        "{:?}",
+        tracked.blockers
+    );
+    let linked = f
+        .engine
+        .plan(&w.id, Operation::Adopt, Fixture::only("linked"))
+        .unwrap();
+    assert!(
+        linked
+            .blockers
+            .iter()
+            .any(|b| b.contains("not a real directory")),
+        "{:?}",
+        linked.blockers
+    );
+    assert!(!outside.join(".treetender-owner.json").exists());
+    assert!(f.lane.join("vendor/lib.rs").exists());
+}
+
+#[test]
+fn foreign_marker_blocks_directory_cleanup_and_keeps_contents() {
+    let f = Fixture::new();
+    f.manifest(&directory("cargo-target", "target"));
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let clean = f
+        .engine
+        .plan(&w.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    // Output copied from another lane carries that lane's owner token.
+    let marker = fs::read_to_string(f.lane.join("target/.treetender-owner.json")).unwrap();
+    let mut foreign: serde_json::Value = serde_json::from_str(&marker).unwrap();
+    foreign["owner_token"] = uuid::Uuid::new_v4().to_string().into();
+    fs::rename(f.lane.join("target"), f.lane.join("original")).unwrap();
+    fs::create_dir(f.lane.join("target")).unwrap();
+    fs::write(
+        f.lane.join("target/.treetender-owner.json"),
+        foreign.to_string(),
+    )
+    .unwrap();
+    fs::write(f.lane.join("target/foreign"), "keep").unwrap();
+    assert_eq!(f.engine.apply(&clean).unwrap_err().code, "stale_plan");
+    let fresh = f
+        .engine
+        .plan(&w.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    assert!(
+        fresh
+            .blockers
+            .iter()
+            .any(|b| b.contains("proof does not match")),
+        "{:?}",
+        fresh.blockers
+    );
+    assert!(f.lane.join("target/foreign").exists());
+    assert!(f.lane.join("original/.treetender-owner.json").exists());
+}

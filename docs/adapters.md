@@ -89,6 +89,32 @@ mode = "copy"
 
 The default source root is `workspace`; `primary` explicitly reads the main checkout. Destinations are always relative to the selected checkout. `copy` creates a private regular file; `link` creates a declared symlink. Existing destinations are preserved. Cleanup checks the recorded instance and contents, preserves edits and refuses symlink traversal. Use `kind = "agent"` for instructions/skills/tool configuration with the same rules. Parent directories created for preparation can remain after file cleanup.
 
+## Owned directories
+
+```toml
+[[resources]]
+id = "cargo-target"
+kind = "file"
+[resources.adapter]
+type = "directory"
+path = "target"
+```
+
+A directory resource owns one directory inside the checkout: Cargo `target/`, `node_modules/`, `.venv/` or another per-lane build or dependency tree. Its target is `dir:{workspace_id}:{path}`. Prepare creates the directory and writes `<path>/.treetender-owner.json` with the owner token and an instance ID generated at creation. Inspection reads that marker; the request token is never echoed. A directory without a marker is foreign state: prepare blocks instead of claiming it.
+
+Cleanup captures the directory into private storage beside it, verifies the captured marker against the receipt and then removes that tree. Removal is descriptor-relative, never follows symlinks, stops at a nested `.git` and refuses to cross into another filesystem. The marker is removed last, so an interrupted cleanup still proves the same instance and resumes. A mismatched capture is restored without replacing anything that appeared at the path meanwhile. Cleanup also refuses a directory that contains tracked files.
+
+Existing output is claimed only through a reviewed adopt:
+
+```sh
+treetender plan adopt --only cargo-target --out adopt.json
+treetender apply adopt.json
+```
+
+Adopt requires an explicit selection, a linked (non-primary) workspace and a directory that is a real directory, ignored by Git and free of tracked files. The plan records the directory's device and inode, so a directory replaced after review makes the plan stale. Apply writes the marker; the contents are untouched until an explicit clean. A directory that already has a receipt must be forgotten before it can be adopted again.
+
+Tools such as `cargo clean` or `npm ci` delete and recreate the whole directory, which removes the marker. Run `prepare` before building to recreate an owned directory, or adopt the recreated one. `status --usage` reports the allocated bytes of present directory resources; it walks the trees, so it is opt-in, and it never enters plans or proofs. Shared caches such as a common `CARGO_TARGET_DIR` or sccache stay `shared` or `borrowed` declarations.
+
 ## Portman
 
 The built-in Portman adapter currently provides read-only observations of an explicit service through the daemon's length-prefixed JSON Unix-socket protocol. Put machine-specific socket paths in the private overlay. Declare existing services as `borrowed` or `shared`; TreeTender never implicitly adopts or destroys them.

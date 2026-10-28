@@ -91,8 +91,13 @@ fn run(cli: Cli) -> Result<()> {
             }
             serde_json::to_value(registered)?
         }
-        Command::Status => {
+        Command::Status { usage } => {
             let status = engine.status(&workspace)?;
+            let usage = if usage {
+                Some(engine.usage(&workspace)?)
+            } else {
+                None
+            };
             if !cli.json {
                 println!(
                     "{}{}",
@@ -129,6 +134,9 @@ fn run(cli: Cli) -> Result<()> {
                 for (id, proof) in &status.observations {
                     println!("  observed {id}: {:?}", proof.presence);
                 }
+                for (id, bytes) in usage.iter().flatten() {
+                    println!("  usage {id}: {}", human_bytes(*bytes));
+                }
                 for issue in &status.issues {
                     println!("  issue: {issue}");
                 }
@@ -140,7 +148,11 @@ fn run(cli: Cli) -> Result<()> {
                 }
                 return Ok(());
             }
-            serde_json::to_value(status)?
+            let mut value = serde_json::to_value(status)?;
+            if let Some(usage) = usage {
+                value["usage"] = serde_json::to_value(usage)?;
+            }
+            value
         }
         Command::List => {
             let workspaces = engine.list()?;
@@ -214,6 +226,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Forget(action) => {
             return action_run(&engine, &workspace, Lifecycle::Forget, action, cli.json);
         }
+        Command::Adopt(action) => {
+            return action_run(&engine, &workspace, Lifecycle::Adopt, action, cli.json);
+        }
         Command::Tui => {
             if cli.json {
                 bail!("the TUI requires a terminal; use status/plan/apply with --json for agents");
@@ -245,8 +260,10 @@ fn action_run(
             )
             .into());
         }
-        if matches!(operation, Lifecycle::Clean | Lifecycle::Forget)
-            && action.expect_fingerprint.as_deref() != Some(&plan.fingerprint)
+        if matches!(
+            operation,
+            Lifecycle::Clean | Lifecycle::Forget | Lifecycle::Adopt
+        ) && action.expect_fingerprint.as_deref() != Some(&plan.fingerprint)
         {
             return Err(treetender::Error::new("review_required","review a plan first; use apply FILE, or repeat the command with --apply --expect-fingerprint FINGERPRINT").into());
         }
@@ -292,7 +309,7 @@ fn output_plan(plan: &Plan, structured: bool) -> Result<()> {
     );
     println!("Fingerprint: {}", plan.fingerprint);
     println!(
-        "Plan only. Apply a saved plan, or repeat clean/forget with --apply --expect-fingerprint FINGERPRINT."
+        "Plan only. Apply a saved plan, or repeat clean/forget/adopt with --apply --expect-fingerprint FINGERPRINT."
     );
     Ok(())
 }
@@ -327,6 +344,17 @@ fn output(value: impl Serialize, structured: bool) -> Result<()> {
     Ok(())
 }
 
+fn human_bytes(bytes: u64) -> String {
+    let mut value = bytes as f64;
+    for unit in ["B", "KiB", "MiB", "GiB"] {
+        if value < 1024.0 {
+            return format!("{value:.1} {unit}");
+        }
+        value /= 1024.0;
+    }
+    format!("{value:.1} TiB")
+}
+
 fn default_state_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
         return PathBuf::from(path).join("treetender");
@@ -351,6 +379,7 @@ impl From<Lifecycle> for Operation {
             Lifecycle::Stop => Self::Stop,
             Lifecycle::Clean => Self::Clean,
             Lifecycle::Forget => Self::Forget,
+            Lifecycle::Adopt => Self::Adopt,
         }
     }
 }
@@ -370,17 +399,17 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             "protocol":"treetender-cli/v1",
             "output":{"version":1,"ok":"boolean","result":"command-specific JSON","error":{"code":"stable error code","message":"human explanation"}},
             "global_flags":["--repo PATH","--state-dir PATH","--json"],
-            "read_commands":["inspect","status","list","history","plan OP","agent schema","agent resources","agent read URI"],
+            "read_commands":["inspect","status [--usage]","list","history","plan OP","agent schema","agent resources","agent read URI"],
             "write_commands":["init","register","apply FILE","OP --apply"],
-            "operations":["prepare","build","check","start","stop","clean","forget"],
+            "operations":["prepare","build","check","start","stop","clean","forget","adopt"],
             "resource_registration":{
                 "passive":{"adapter":"omit","required":["id","kind","target"],"kinds":["file","data","service","agent","custom"],"optional":["ownership","depends_on","ports","description","manager"],"live_observation":false,"allocation_claim":false,"lifecycle_authority":false},
-                "managed":{"adapter":"explicit configuration","allocation_proof":"required for effects"},
+                "managed":{"adapter":"explicit configuration","types":["file","directory","script","portman"],"allocation_proof":"required for effects"},
                 "refresh":"edit declarations and register again; orphaned references can be explicitly forgotten"
             },
             "selectors":{"only":"repeat --only RESOURCE_OR_TASK","retain":"repeat --keep RESOURCE"},
             "workflow":["inspect","register explicitly","plan OP --out plan.json","review blockers, effects and exclusions","apply plan.json"],
-            "safety":{"stop":"retain checkout and persistent data","clean":"verified owned selections only; reviewed fingerprint required for --apply","forget":"explicit --only resources; release claims/ports while retaining instances and audit receipts","primary":"protected","force_bypass":false,"scripts":"trusted executable code; not sandboxed"},
+            "safety":{"stop":"retain checkout and persistent data","clean":"verified owned selections only; reviewed fingerprint required for --apply","forget":"explicit --only resources; release claims/ports while retaining instances and audit receipts","adopt":"explicit --only resources; mark existing unmarked state (directory: Git-ignored, untracked) as owned after review; reviewed fingerprint required for --apply","primary":"protected","force_bypass":false,"scripts":"trusted executable code; not sandboxed"},
             "resources":"agent resources",
             "adapter_contract":"treetender://adapter"
         })),
@@ -389,7 +418,8 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             {"uri":"treetender://adapter","title":"External adapter protocol","mime_type":"text/markdown"},
             {"uri":"treetender://registry","title":"Registry and resource relationships","mime_type":"text/markdown"},
             {"uri":"treetender://manifest","title":"Minimal portable manifest","mime_type":"text/plain"},
-            {"uri":"treetender://inventory","title":"Passive resource inventory example","mime_type":"text/plain"}
+            {"uri":"treetender://inventory","title":"Passive resource inventory example","mime_type":"text/plain"},
+            {"uri":"treetender://build-output","title":"Owned build output directories example","mime_type":"text/plain"}
         ])),
         AgentCommand::Read { uri } => {
             let text = match uri.as_str() {
@@ -398,6 +428,7 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
                 "treetender://registry" => include_str!("../docs/registry.md"),
                 "treetender://manifest" => include_str!("../examples/minimal.toml"),
                 "treetender://inventory" => include_str!("../examples/inventory.toml"),
+                "treetender://build-output" => include_str!("../examples/build-output.toml"),
                 _ => bail!(
                     "unknown resource URI {uri}; discover available URIs with agent resources"
                 ),

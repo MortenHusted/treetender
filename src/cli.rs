@@ -29,7 +29,11 @@ pub enum Command {
     /// Register this checkout; never claim existing external resources.
     Register,
     /// Inspect the selected workspace and its recorded resources.
-    Status,
+    Status {
+        /// Also report allocated bytes of directory resources (walks their trees).
+        #[arg(long)]
+        usage: bool,
+    },
     /// List centrally registered workspaces, including retained state.
     List,
     /// Inspect durable operation outcomes and incomplete work.
@@ -60,6 +64,8 @@ pub enum Command {
     Clean(Action),
     /// Plan non-destructive release of explicit claims/ports; instances remain.
     Forget(Action),
+    /// Plan claiming explicit existing unmarked state, such as ignored build output.
+    Adopt(Action),
     /// Browse workspaces, review plans and apply them through the same policy.
     Tui,
     /// Discover machine interfaces and agent-readable resources.
@@ -78,6 +84,7 @@ pub enum Lifecycle {
     Stop,
     Clean,
     Forget,
+    Adopt,
 }
 
 impl Lifecycle {
@@ -90,6 +97,7 @@ impl Lifecycle {
             Self::Stop => "stop",
             Self::Clean => "clean",
             Self::Forget => "forget",
+            Self::Adopt => "adopt",
         }
     }
 }
@@ -111,7 +119,7 @@ pub struct Action {
     /// Execute the displayed operation. Without this flag, only plan.
     #[arg(long)]
     pub apply: bool,
-    /// Required for clean/forget --apply: fingerprint of the plan you reviewed.
+    /// Required for clean/forget/adopt --apply: fingerprint of the plan you reviewed.
     #[arg(long)]
     pub expect_fingerprint: Option<String>,
 }

@@ -64,15 +64,16 @@ For bugs and questions, see [support](SUPPORT.md). Read [contributing](CONTRIBUT
 - Saved plans are revalidated under a process lock. Partial effects retain provisional claims and recovery history.
 - An external provider unexpectedly reporting a prepared instance missing does not erase its allocation. Explicit `forget --only RESOURCE` plans release claims while retaining instances and audit receipts.
 - Generated files are explicit, edits are preserved, and symlink escapes are refused.
+- Existing state becomes owned only through an explicit, reviewed `adopt`; owned directories carry an ownership marker that cleanup verifies before removal.
 - Build/check commands are separate from service startup; stop retains resource and port claims.
 
 Adapters and tasks are trusted executable code, with the user's normal permissions. Provider correctness is part of the ownership boundary; TreeTender cannot sandbox a script that ignores its contract.
 
 ## Integrations and scope
 
-The initial implementation includes explicit file copy/link operations, generic JSON command adapters, dependency ordering, build/check artifacts and a read-only Portman service observer. Managed service effects use adapters with real instance/ownership proof. The Portman observer does not synchronize config, start/stop services or adopt registrations.
+The initial implementation includes explicit file copy/link operations, owned directories for per-lane build output, generic JSON command adapters, dependency ordering, build/check artifacts and a read-only Portman service observer. Managed service effects use adapters with real instance/ownership proof. The Portman observer does not synchronize config, start/stop services or adopt registrations.
 
-The namespace example models database and storage lanes in disposable files. It demonstrates optional managed effects and is not a database driver. Integrations that actually create or destroy resources must implement the ownership contract; associations with externally managed resources do not grant those capabilities. Build artifacts are observed and retained; destructive artifact cleanup requires an explicitly managed resource.
+The namespace example models database and storage lanes in disposable files. It demonstrates optional managed effects and is not a database driver. Integrations that actually create or destroy resources must implement the ownership contract; associations with externally managed resources do not grant those capabilities. Build artifacts are observed and retained; destructive artifact cleanup requires an explicitly managed resource, such as a directory resource for a lane's `target/` or `node_modules/`.
 
 TreeTender is available under the [MIT License](LICENSE). There is no published binary release yet. [Product direction](docs/brief.md), [implementation contract](docs/plans/2026-10-25-implementation.md) and [research](docs/research.md) explain the design.
 
