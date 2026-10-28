@@ -52,7 +52,7 @@ treetender --json agent resources
 treetender --json status
 ```
 
-See [usage](docs/usage.md), the [adapter contract](docs/adapters.md) and [examples](examples/). Put machine-specific declarations in ignored `.treetender.local.toml`. Existing live workspaces are never automatically adopted or migrated.
+See [usage](docs/usage.md), the [adapter contract](docs/adapters.md) and [examples](examples/). Put machine-specific declarations in ignored `.treetender.local.toml`; linked checkouts also inherit the primary checkout's, so one private file covers every lane. Existing live workspaces are never automatically adopted or migrated.
 
 For bugs and questions, see [support](SUPPORT.md). Read [contributing](CONTRIBUTING.md) before proposing changes and [the security policy](SECURITY.md) before reporting a vulnerability.
 

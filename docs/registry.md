@@ -5,7 +5,7 @@ TreeTender stores machine state in a private SQLite registry. Portable declarati
 | Record | Identity and purpose |
 | --- | --- |
 | Repository | Stable UUID in the Git common directory; independent of origin, owner or current path |
-| Workspace | Stable UUID in its Git directory, bound to a repository and current checkout path |
+| Workspace | Stable UUID in its Git directory, bound to a repository and current checkout path; a name fixed at first registration and unique within the repository |
 | Primary | The ordinary checkout whose Git directory is the common directory; intrinsically protected |
 | Declaration snapshot | Registered resource uses, including shared/borrowed references that survive checkout disappearance |
 | Allocation claim | Exact provider target, allocating workspace/resource, token, proof, declaration and state |

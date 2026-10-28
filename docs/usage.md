@@ -10,6 +10,26 @@ For accounting only, omit `adapter` and provide `id`, `kind` and `target`. Optio
 
 Passive resources are excluded from prepare/start/stop/cleanup regardless of ownership mode. Passive-only dependency graphs are accounting relationships; operations requiring an actually ready prerequisite need an observer and block without one. A retained passive dependent can block deletion of its parent. Update live associations by editing the manifest and registering again; registered associations survive checkout disappearance until explicitly forgotten. Existing managed receipts survive removing an adapter and require deliberate reconciliation. External receipt import remains unavailable.
 
+## Lane names, private overlays and lane values
+
+Each workspace gets a name at its first registration, derived from the checkout directory (`feature/Login` becomes `feature-login`) or chosen with `register --name NAME`. Names are unique within a repository and fixed afterwards, so `{workspace_name}` and `{workspace_ident}` targets survive moves.
+
+Private declarations for a repository whose team does not track `treetender.toml` go in the primary checkout's ignored `.treetender.local.toml`. Linked checkouts inherit it between their own `treetender.toml` and `.treetender.local.toml`; a later file replaces an earlier declaration with the same ID. Use `scope = "linked"` for declarations only lanes should get, such as an isolated database, and `scope = "primary"` for the primary's own:
+
+```toml
+# primary checkout: .treetender.local.toml
+version = 1
+[[resources]]
+id = "cargo-target"
+kind = "file"
+scope = "linked"
+[resources.adapter]
+type = "directory"
+path = "target"
+```
+
+Tasks and adapter commands receive the lane values as `TREETENDER_*` environment variables. `treetender env` prints them as dotenv lines for direnv, mise or a process manager's env file; `--json env` returns an object.
+
 ## Review and execute
 
 ```sh
