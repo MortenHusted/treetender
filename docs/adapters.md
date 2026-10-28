@@ -117,6 +117,24 @@ Adopt requires an explicit selection, a linked (non-primary) workspace and a dir
 
 Tools such as `cargo clean` or `npm ci` delete and recreate the whole directory, which removes the marker. Run `prepare` before building to recreate an owned directory, or adopt the recreated one. `status --usage` reports the allocated bytes of present directory resources; it walks the trees, so it is opt-in, and it never enters plans or proofs. Shared caches such as a common `CARGO_TARGET_DIR` or sccache stay `shared` or `borrowed` declarations.
 
+## PostgreSQL databases
+
+```toml
+[[resources]]
+id = "dev-db"
+kind = "data"
+[resources.adapter]
+type = "postgres"
+database = "app_development_{workspace_ident}"
+service = "local"   # or host/port/user; never a password
+```
+
+A postgres resource owns one database on a server it never owns. The adapter runs `psql` (override with `command`), so no database driver is built in and credentials come from libpq: a service file entry, a password file or `PG*` variables. Its target is `postgres:<service or host:port>/<database>`. The database name accepts workspace placeholders and must be 1–63 lowercase letters, digits or underscores.
+
+Prepare runs `CREATE DATABASE` and stores a JSON marker with the owner token and an instance ID as the database comment. Inspection reads the OID and that comment; a database without the marker is foreign state and prepare blocks. Clean re-reads the marker, then, in the same psql session, drops the database only if its OID and comment still match (`DROP DATABASE … WITH (FORCE)`, PostgreSQL 13 or later). `DROP DATABASE` cannot run inside a transaction, so a database replaced in the instant between that check and the drop is not detected. A recorded database that unexpectedly disappears keeps its claim until a reviewed `forget`.
+
+Existing lane databases can be adopted with a reviewed `adopt --only RESOURCE` when their name contains this workspace's `{workspace_ident}`, as evidence that they are lane-specific; the plan freezes the OID. Copies that a framework derives from a lane database, such as Rails' parallel test databases, carry no marker and are not dropped.
+
 ## Portman
 
 The built-in Portman adapter currently provides read-only observations of an explicit service through the daemon's length-prefixed JSON Unix-socket protocol. Put machine-specific socket paths in the private overlay. Declare existing services as `borrowed` or `shared`; TreeTender never implicitly adopts or destroys them.
