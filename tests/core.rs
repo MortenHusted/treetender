@@ -2387,3 +2387,86 @@ fn tasks_and_script_adapters_receive_lane_values() {
         request["target"] == "db:feature-x" && request["_lane"] == "feature-x"
     }));
 }
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+#[test]
+fn port_leases_are_durable_distinct_and_released_only_explicitly() {
+    let f = Fixture::new();
+    let manifest = "version=1\n[ports.web]\nrange=[43100, 43103]\n[[resources]]\nid='web'\nkind='service'\ntarget='http://127.0.0.1:{port:web}'\n";
+    fs::write(f.lane.join("treetender.toml"), manifest).unwrap();
+    let w = f.register();
+    let port = w.ports["web"];
+    assert!((43100..=43103).contains(&port));
+    assert_eq!(f.register().ports["web"], port);
+    assert!(
+        w.environment()
+            .contains(&("TREETENDER_PORT_WEB".into(), port.to_string()))
+    );
+    let declared = f.engine.status(&w.id).unwrap().declarations;
+    assert_eq!(
+        declared.resources[0].target,
+        format!("http://127.0.0.1:{port}")
+    );
+
+    // Another lane never gets a leased port, even while nothing listens on it.
+    let second = f.temp.path().join("second");
+    git(
+        &f.primary,
+        &["worktree", "add", "-b", "second", second.to_str().unwrap()],
+    );
+    fs::write(second.join("treetender.toml"), manifest).unwrap();
+    let other = f.engine.register(&second).unwrap();
+    assert_ne!(other.ports["web"], port);
+
+    // Static resource ports cannot take a leased port.
+    fs::write(
+        second.join("treetender.toml"),
+        format!(
+            "version=1\n{}",
+            f.resource("static", "service", "static", &[port])
+        ),
+    )
+    .unwrap();
+    let other = f.engine.register(&second).unwrap();
+    assert!(other.ports.is_empty());
+    let result = f.apply(&other, Operation::Prepare, Selectors::default());
+    assert_eq!(result.failure.unwrap().code, "port_conflict");
+
+    let forget = f
+        .engine
+        .plan(&w.id, Operation::Forget, Fixture::only("port:web"))
+        .unwrap();
+    assert!(forget.blockers.is_empty(), "{:?}", forget.blockers);
+    assert_eq!(forget.steps[0].target, format!("lease:{}:web", w.id));
+    assert!(f.engine.apply(&forget).unwrap().success);
+    assert!(f.engine.workspace(&w.id).unwrap().ports.is_empty());
+    assert!(f.register().ports.contains_key("web"));
+}
+
+#[test]
+fn port_leases_skip_listeners_report_exhaustion_and_follow_range_changes() {
+    let f = Fixture::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let busy = listener.local_addr().unwrap().port();
+    f.manifest(&format!("[ports.web]\nrange=[{busy}, {busy}]\n"));
+    assert_eq!(
+        f.engine.register(&f.lane).unwrap_err().code,
+        "port_exhausted"
+    );
+    assert!(f.engine.list().unwrap().is_empty());
+    drop(listener);
+    assert_eq!(f.register().ports["web"], busy);
+
+    let moved = free_port();
+    f.manifest(&format!("[ports.web]\nrange=[{moved}, {moved}]\n"));
+    assert_eq!(f.register().ports["web"], moved);
+    f.manifest("");
+    assert!(f.register().ports.is_empty());
+}

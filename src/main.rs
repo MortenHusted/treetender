@@ -149,6 +149,9 @@ fn run(cli: Cli) -> Result<()> {
                 for (id, proof) in &status.observations {
                     println!("  observed {id}: {:?}", proof.presence);
                 }
+                for (name, port) in &status.workspace.ports {
+                    println!("  port {name}: {port}");
+                }
                 for (id, bytes) in usage.iter().flatten() {
                     println!("  usage {id}: {}", human_bytes(*bytes));
                 }

@@ -82,6 +82,54 @@ fn prerequisite(
     Ok(proof)
 }
 
+/// Leases each declared port name to the workspace. An existing lease inside
+/// its range is kept even while its listener runs; leases for names no longer
+/// declared, or outside a changed range, are released.
+fn lease_ports(
+    g: &Guard,
+    w: &Workspace,
+    declared: &BTreeMap<String, crate::manifest::PortRange>,
+) -> Result<BTreeMap<String, u16>> {
+    let mut leases = g.leases(&w.id)?;
+    for (name, port) in leases.clone() {
+        if declared
+            .get(&name)
+            .is_none_or(|range| !range.contains(port))
+        {
+            g.release(&format!("lease:{}:{name}", w.id))?;
+            leases.remove(&name);
+        }
+    }
+    for (name, range) in declared {
+        if leases.contains_key(name) {
+            continue;
+        }
+        let [low, high] = range.range;
+        let span = u32::from(high - low) + 1;
+        let seed = adapter::digest(format!("{}:{name}", w.id).as_bytes());
+        let start = u32::from_str_radix(&seed[..8], 16).unwrap_or(0) % span;
+        let port = (0..span)
+            .map(|offset| low + ((start + offset) % span) as u16)
+            .find(|&port| !g.port_taken(port).unwrap_or(true) && !listening(port))
+            .ok_or_else(|| {
+                Error::new(
+                    "port_exhausted",
+                    format!("no free port in {low}-{high} for {name}"),
+                )
+            })?;
+        g.lease(&format!("lease:{}:{name}", w.id), port)?;
+        leases.insert(name.clone(), port);
+    }
+    Ok(leases)
+}
+
+/// A port is busy when any local listener prevents binding it.
+fn listening(port: u16) -> bool {
+    ["127.0.0.1", "0.0.0.0"]
+        .iter()
+        .any(|host| std::net::TcpListener::bind((*host, port)).is_err())
+}
+
 fn valid_name(name: &str) -> Result<()> {
     let mut chars = name.chars();
     if name.len() > 40
@@ -206,7 +254,7 @@ impl Engine {
         let known = g.workspaces()?;
         let repo = git::identity(&d.common_dir, true)?.unwrap();
         let registering_primary = d.git_dir == d.common_dir;
-        let primary = Workspace {
+        let mut primary = Workspace {
             id: repo.clone(),
             repository_id: repo.clone(),
             path: d.primary_path.clone(),
@@ -220,6 +268,11 @@ impl Engine {
                 &d.primary_path,
                 name.filter(|_| registering_primary),
             )?,
+            ports: BTreeMap::new(),
+        };
+        primary.ports = match self.loaded_manifest(&primary)? {
+            Some(m) => lease_ports(&g, &primary, &m.ports)?,
+            None => g.leases(&primary.id)?,
         };
         let manifest = self.resolved_manifest(&primary)?;
         for old in g.claims(Some(&primary.id))? {
@@ -269,7 +322,7 @@ impl Engine {
             return Ok(primary);
         }
         let id = git::identity(&d.git_dir, true)?.unwrap();
-        let w = Workspace {
+        let mut w = Workspace {
             name: workspace_name(&known, &id, &repo, &d.path, name)?,
             id,
             repository_id: repo,
@@ -277,7 +330,11 @@ impl Engine {
             git_dir: d.git_dir,
             common_dir: d.common_dir,
             primary: false,
+            ports: BTreeMap::new(),
         };
+        if let Some(m) = self.loaded_manifest(&w)? {
+            w.ports = lease_ports(&g, &w, &m.ports)?;
+        }
         g.save_workspace(&w)?;
         g.save_declarations(&w, &self.resolved_manifest(&w)?)?;
         transaction.commit()?;
@@ -395,17 +452,20 @@ impl Engine {
         let w = g.resolve(Path::new(workspace))?;
         self.plan_locked(&g, w, operation, selectors)
     }
-    fn resolved_manifest(&self, w: &Workspace) -> Result<Manifest> {
+    /// The checkout's own declarations, or None when it is not where it was registered.
+    fn loaded_manifest(&self, w: &Workspace) -> Result<Option<Manifest>> {
         let current = match git::is_current(w) {
             Ok(current) => current,
             Err(e) if e.code == "checkout_location_unknown" => false,
             Err(e) => return Err(e),
         };
-        let mut m = if current {
-            Manifest::load(&w.path, &git::discover(&w.path)?.primary_path)?
-        } else {
-            Manifest::default()
-        };
+        if !current {
+            return Ok(None);
+        }
+        Manifest::load(&w.path, &git::discover(&w.path)?.primary_path).map(Some)
+    }
+    fn resolved_manifest(&self, w: &Workspace) -> Result<Manifest> {
+        let mut m = self.loaded_manifest(w)?.unwrap_or_default();
         for r in &mut m.resources {
             r.target = w.substitute(&r.target)?;
             if r.target.contains(['{', '}']) {
@@ -1059,12 +1119,34 @@ impl Engine {
                 .resources
                 .iter()
                 .any(|r| matches(selector, &r.id, &r.kind))
+                && !selector
+                    .strip_prefix("port:")
+                    .is_some_and(|name| w.ports.contains_key(name))
             {
                 return Err(Error::new(
                     "selector",
                     format!("unknown resource selector {selector}"),
                 ));
             }
+        }
+        for name in w.ports.keys() {
+            let id = format!("port:{name}");
+            if !plan.selectors.only.contains(&id) {
+                continue;
+            }
+            if plan.selectors.retain.contains(&id) {
+                plan.exclusions.push(Exclusion {
+                    id,
+                    reason: "explicitly retained".into(),
+                });
+                continue;
+            }
+            plan.steps.push(Step {
+                id,
+                action: Operation::Forget,
+                target: format!("lease:{}:{name}", w.id),
+                destructive: false,
+            });
         }
         for resource in &plan.manifest.resources {
             if !selected(&plan.selectors.only, &resource.id, &resource.kind) {
@@ -1243,6 +1325,13 @@ impl Engine {
                 &g.db,
                 rusqlite::TransactionBehavior::Immediate,
             )?;
+            if step.target.starts_with("lease:") {
+                g.release(&step.target)?;
+                transaction.commit()?;
+                return Ok(Some(serde_json::to_string(
+                    &serde_json::json!({"released_lease":step.target,"port":w.ports.get(&step.id["port:".len()..])}),
+                )?));
+            }
             let receipt = g.claim(&step.target)?;
             if let Some(receipt) = &receipt {
                 if receipt.workspace_id != w.id || receipt.resource_id != step.id {
