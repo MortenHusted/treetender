@@ -16,10 +16,10 @@ pub(crate) fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn cstring(s: &str) -> Result<CString> {
+pub(crate) fn cstring(s: &str) -> Result<CString> {
     CString::new(s).map_err(|_| Error::new("unsafe_path", "path contains NUL"))
 }
-fn fd_file(fd: i32) -> Result<File> {
+pub(crate) fn fd_file(fd: i32) -> Result<File> {
     if fd < 0 {
         return Err(std::io::Error::last_os_error().into());
     }
@@ -55,7 +55,7 @@ fn root_fd(root: &Path) -> Result<File> {
     }
     Ok(dir)
 }
-fn parent(root: &Path, relative: &str, create: bool) -> Result<(File, CString)> {
+pub(crate) fn parent(root: &Path, relative: &str, create: bool) -> Result<(File, CString)> {
     crate::manifest::relative(relative)?;
     let mut dir = root_fd(root)?;
     let mut parts = relative.split('/').peekable();
@@ -143,6 +143,46 @@ pub(crate) fn tree_snapshot(root: &Path, path: &str) -> Result<String> {
     let mut count = 0;
     snapshot_open(file, 0, &mut count)
 }
+/// Sorted entry names of an open directory, excluding `.` and `..`.
+pub(crate) fn dir_names(directory: &File) -> Result<Vec<Vec<u8>>> {
+    // SAFETY: dup gives fdopendir a descriptor it may own/close.
+    let fd = unsafe { libc::dup(directory.as_raw_fd()) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: fd is an owned directory descriptor. On success closedir owns it.
+    let stream = unsafe { libc::fdopendir(fd) };
+    if stream.is_null() {
+        // SAFETY: failed fdopendir did not consume fd.
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: the duplicate shares its offset with the original descriptor.
+    unsafe { libc::rewinddir(stream) };
+    let mut names = vec![];
+    loop {
+        // SAFETY: stream remains open and this thread owns it.
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: d_name is a NUL-terminated name valid until next readdir.
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }
+            .to_bytes()
+            .to_vec();
+        if name != b"." && name != b".." {
+            names.push(name);
+        }
+    }
+    // SAFETY: closes precisely the stream allocated above.
+    unsafe {
+        libc::closedir(stream);
+    }
+    names.sort();
+    Ok(names)
+}
 fn snapshot_open(mut file: File, depth: usize, count: &mut usize) -> Result<String> {
     use std::os::unix::ffi::OsStrExt;
     *count += 1;
@@ -158,40 +198,7 @@ fn snapshot_open(mut file: File, depth: usize, count: &mut usize) -> Result<Stri
     if !meta.is_dir() {
         return Err(Error::new("unsafe_path", "input contains a special file"));
     }
-    // SAFETY: dup gives fdopendir a descriptor it may own/close.
-    let fd = unsafe { libc::dup(file.as_raw_fd()) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    // SAFETY: fd is an owned directory descriptor. On success closedir owns it.
-    let directory = unsafe { libc::fdopendir(fd) };
-    if directory.is_null() {
-        // SAFETY: failed fdopendir did not consume fd.
-        unsafe {
-            libc::close(fd);
-        }
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let mut names = vec![];
-    loop {
-        // SAFETY: directory remains open and this thread owns its stream.
-        let entry = unsafe { libc::readdir(directory) };
-        if entry.is_null() {
-            break;
-        }
-        // SAFETY: d_name is a NUL-terminated name valid until next readdir.
-        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }
-            .to_bytes()
-            .to_vec();
-        if name != b"." && name != b".." {
-            names.push(name);
-        }
-    }
-    // SAFETY: closes precisely the stream allocated above.
-    unsafe {
-        libc::closedir(directory);
-    }
-    names.sort();
+    let names = dir_names(&file)?;
     let mut entries = vec![];
     for name in names {
         let c = CString::new(name.clone())
@@ -211,28 +218,29 @@ fn snapshot_open(mut file: File, depth: usize, count: &mut usize) -> Result<Stri
     }
     Ok(format!("tree:{}", digest(&serde_json::to_vec(&entries)?)))
 }
-fn file_proof(root: &Path, destination: &str, mode: FileMode, token: &str) -> Result<Proof> {
-    let (dir, name) = match parent(root, destination, false) {
-        Ok(p) => p,
-        Err(e) if e.code == "unsafe_path" && !root.join(destination).exists() => {
-            // A missing parent is missing; a symlink parent is never missing.
+/// The anchored parent of a relative path, or None when a parent is missing.
+/// A missing parent proves absence; a symlinked parent never does.
+pub(crate) fn anchored_parent(root: &Path, relative: &str) -> Result<Option<(File, CString)>> {
+    match parent(root, relative, false) {
+        Ok(p) => Ok(Some(p)),
+        Err(e) if e.code == "unsafe_path" && !root.join(relative).exists() => {
             let mut p = root.to_path_buf();
-            for part in destination
-                .split('/')
-                .take(destination.split('/').count() - 1)
-            {
+            for part in relative.split('/').take(relative.split('/').count() - 1) {
                 p.push(part);
                 match std::fs::symlink_metadata(&p) {
                     Ok(m) if m.is_dir() && !m.file_type().is_symlink() => (),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return Ok(Proof::missing());
-                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                     _ => return Err(e),
                 }
             }
-            return Err(e);
+            Err(e)
         }
-        Err(e) => return Err(e),
+        Err(e) => Err(e),
+    }
+}
+fn file_proof(root: &Path, destination: &str, mode: FileMode, token: &str) -> Result<Proof> {
+    let Some((dir, name)) = anchored_parent(root, destination)? else {
+        return Ok(Proof::missing());
     };
     if uuid::Uuid::parse_str(token).is_ok() {
         let quarantine = cstring(&format!(".treetender-delete-{token}"))?;
