@@ -45,6 +45,17 @@ destination = ".env"
 mode = "link"
 optional = true
 
+# An isolated development database per lane, on a server described by a
+# libpq service entry. Credentials stay in libpq's own files.
+[[resources]]
+id = "dev-db"
+kind = "data"
+scope = "linked"
+[resources.adapter]
+type = "postgres"
+database = "app_development_{workspace_ident}"
+service = "local"
+
 # Lane configuration rendered from private templates kept in the primary.
 # database.yml.template might say: database: app_development_{workspace_ident}
 [[resources]]

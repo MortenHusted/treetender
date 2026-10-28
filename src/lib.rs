@@ -7,6 +7,7 @@ pub mod engine;
 pub mod git;
 pub mod manifest;
 pub mod model;
+mod postgres;
 mod registry;
 
 pub use engine::Engine;

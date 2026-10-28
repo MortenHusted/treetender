@@ -125,6 +125,34 @@ pub enum Adapter {
     Directory {
         path: String,
     },
+    /// One database on a PostgreSQL server, managed through `psql`.
+    /// Credentials come from libpq (service file, password file, PG* variables).
+    Postgres {
+        database: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+        #[serde(default = "psql")]
+        command: Vec<String>,
+        #[serde(default = "timeout")]
+        timeout_secs: u64,
+    },
+}
+
+impl Adapter {
+    /// External providers keep a claim when they unexpectedly report a recorded
+    /// allocation missing; local files and directories retire it on clean.
+    pub fn is_external(&self) -> bool {
+        matches!(self, Adapter::Script { .. } | Adapter::Postgres { .. })
+    }
+}
+fn psql() -> Vec<String> {
+    vec!["psql".into()]
 }
 fn timeout() -> u64 {
     30
@@ -342,6 +370,17 @@ impl Manifest {
                     }
                 }
                 Some(Adapter::Directory { path }) => writable_destination(path)?,
+                Some(Adapter::Postgres {
+                    database,
+                    command,
+                    timeout_secs,
+                    ..
+                }) => {
+                    validate_command(command, *timeout_secs)?;
+                    if database.trim().is_empty() {
+                        return Err(Error::new("manifest", "postgres needs a database"));
+                    }
+                }
                 Some(Adapter::Portman {
                     command,
                     service,
