@@ -43,7 +43,7 @@ target/release/treetender --repo /path/to/checkout prepare
 target/release/treetender --repo /path/to/checkout prepare --apply
 ```
 
-Lifecycle commands show a plan until `--apply` is supplied. Cleanup and forgetting additionally require the reviewed fingerprint, or a saved plan: use `plan clean --keep database --out cleanup.json`, review it, then `apply cleanup.json`. The named resource is retained regardless of backend. `stop --apply` retains data and checkout.
+Lifecycle commands show a plan until `--apply` is supplied. Cleanup, forgetting, adoption and unregistering additionally require the reviewed fingerprint, or a saved plan: use `plan clean --keep database --out cleanup.json`, review it, then `apply cleanup.json`. The named resource is retained regardless of backend. `stop --apply` retains data and checkout.
 
 ```sh
 treetender tui

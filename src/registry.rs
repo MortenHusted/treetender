@@ -263,6 +263,14 @@ impl Guard {
         )?;
         self.bump()
     }
+    /// Drops a workspace record and its declaration snapshot; its operation
+    /// history stays under the ID.
+    pub fn delete_workspace(&self, id: &str) -> Result<()> {
+        self.db
+            .execute("DELETE FROM declarations WHERE workspace=?", [id])?;
+        self.db.execute("DELETE FROM workspaces WHERE id=?", [id])?;
+        self.bump()
+    }
     pub fn claims(&self, workspace: Option<&str>) -> Result<Vec<Receipt>> {
         let mut q = self.db.prepare(
             "SELECT body FROM claims WHERE (?1 IS NULL OR workspace=?1) ORDER BY resource",

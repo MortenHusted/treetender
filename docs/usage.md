@@ -56,7 +56,7 @@ treetender --repo . stop --apply
 treetender --repo . clean --keep database
 ```
 
-Lifecycle commands produce a plan until `--apply` is supplied. Preparation never starts services. Stop retains persistent data and the checkout. Cleanup is explicit and can retain any named resource, including a database, storage prefix, volume or file. Primary, shared and borrowed resources are excluded from destruction. `clean --apply`, `forget --apply` and `adopt --apply` require `--expect-fingerprint FINGERPRINT` from an earlier reviewed plan; applying a saved plan is equivalent.
+Lifecycle commands produce a plan until `--apply` is supplied. Preparation never starts services. Stop retains persistent data and the checkout. Cleanup is explicit and can retain any named resource, including a database, storage prefix, volume or file. Primary, shared and borrowed resources are excluded from destruction. `clean --apply`, `forget --apply`, `adopt --apply` and `unregister --apply` require `--expect-fingerprint FINGERPRINT` from an earlier reviewed plan; applying a saved plan is equivalent.
 
 For a separately reviewed operation, save and apply the exact plan:
 
@@ -80,6 +80,17 @@ treetender apply forget.json
 ```
 
 Forget requires an explicit resource selection, preserves the complete receipt in operation history, and does not grant ownership of an existing object to a later prepare. Primary workspace records remain protected. For an absent/replaced linked checkout, select its stable ID with `--repo ID`; forget can also release its stale borrowed references. Live references are changed in the declaration and refreshed through register.
+
+## Unregister a removed checkout
+
+A removed linked checkout keeps its record, and with it its name, port leases and registered references. A new checkout at the same path gets a new identity, so it would register as `NAME-2`. Once the checkout is gone, drop the old record by its ID:
+
+```sh
+treetender --repo WORKSPACE_ID unregister
+treetender --repo WORKSPACE_ID unregister --apply --expect-fingerprint FINGERPRINT
+```
+
+The plan releases the workspace's port leases and references, then drops its record; a checkout registered later can take the name. It is blocked while the checkout still exists or its location is unknown, for the primary workspace, and while the workspace still owns a claim: clean or forget those first, since unregister never deletes or releases an allocation. Operation history stays readable with `treetender --repo WORKSPACE_ID history`.
 
 ## Adopt existing build output
 
@@ -116,7 +127,7 @@ treetender --json plan prepare
 
 The CLI emits a versioned JSON envelope. Saved plans contain the core plan directly, so they can be passed back to `apply` without scraping output. Command errors return a nonzero status. A partially failed apply retains completed receipts and returns a nonzero status; inspect its result and history before retrying.
 
-The TUI uses the same core for plans and execution. Open it with `treetender tui`; use `[` and `]` to switch registered workspaces, arrow keys to select a resource, and space to retain it. Keys `1`–`6` generate lifecycle plans; `7` plans forgetting the selected resource and `8` plans adopting it. `a` applies the reviewed plan, and Escape cancels it. Agent instruction files, skills and tool configuration are explicit file resources, without requiring any particular agent provider.
+The TUI uses the same core for plans and execution. Open it with `treetender tui`; use `[` and `]` to switch registered workspaces, arrow keys to select a resource, and space to retain it. Keys `1`–`6` generate lifecycle plans; `7` plans forgetting the selected resource, `8` plans adopting it and `9` plans unregistering a removed workspace. `a` applies the reviewed plan, and Escape cancels it. Agent instruction files, skills and tool configuration are explicit file resources, without requiring any particular agent provider.
 
 ## Configuration and trust
 

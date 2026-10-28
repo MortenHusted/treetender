@@ -139,6 +139,7 @@ pub enum Operation {
     Clean,
     Forget,
     Adopt,
+    Unregister,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
