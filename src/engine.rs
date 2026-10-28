@@ -20,6 +20,7 @@ fn action(op: Operation) -> &'static str {
         Operation::Clean => "destroy",
         Operation::Forget => "forget",
         Operation::Adopt => "adopt",
+        Operation::Unregister => "unregister",
     }
 }
 fn matches(selector: &str, id: &str, kind: &str) -> bool {
@@ -447,6 +448,11 @@ impl Engine {
     }
     pub fn history(&self, workspace: &str) -> Result<Vec<OperationRecord>> {
         let g = self.registry.lock()?;
+        // An unregistered workspace's history stays readable by its ID.
+        let by_id = g.history(workspace)?;
+        if !by_id.is_empty() {
+            return Ok(by_id);
+        }
         let w = g.resolve(Path::new(workspace))?;
         g.history(&w.id)
     }
@@ -495,6 +501,9 @@ impl Engine {
     ) -> Result<Plan> {
         if operation == Operation::Forget {
             return self.plan_forget(g, w, selectors);
+        }
+        if operation == Operation::Unregister {
+            return self.plan_unregister(g, w, selectors);
         }
         let mut blockers = vec![];
         if operation == Operation::Adopt {
@@ -1223,6 +1232,78 @@ impl Engine {
         Ok(plan)
     }
 
+    /// Drops the record of a linked checkout already removed through Git, so a
+    /// later checkout can take its name. Owned claims must be cleaned or
+    /// forgotten first; its leases and references are released here.
+    fn plan_unregister(&self, g: &Guard, w: Workspace, selectors: Selectors) -> Result<Plan> {
+        if !selectors.only.is_empty() || !selectors.retain.is_empty() {
+            return Err(Error::new(
+                "selector",
+                "unregister takes no --only or --keep; it releases everything the workspace still records",
+            ));
+        }
+        let receipts = g.claims(Some(&w.id))?;
+        let mut plan = Plan {
+            version: 1,
+            workspace: w.clone(),
+            operation: Operation::Unregister,
+            selectors,
+            steps: vec![],
+            exclusions: vec![],
+            blockers: vec![],
+            fingerprint: String::new(),
+            manifest: g.declarations(&w.id)?,
+            observations: BTreeMap::new(),
+        };
+        let absent = match self.checkout_absent(&w) {
+            Ok(true) => true,
+            Ok(false) => {
+                plan.blockers
+                    .push("the checkout still exists; remove it through Git first".into());
+                false
+            }
+            Err(error) if error.code == "checkout_location_unknown" => {
+                plan.blockers.push(error.message);
+                false
+            }
+            Err(error) => return Err(error),
+        };
+        if w.primary {
+            plan.blockers
+                .push("the primary workspace cannot be unregistered".into());
+        }
+        for receipt in &receipts {
+            plan.blockers.push(format!(
+                "{} still has an owned claim on {}; clean or forget it first",
+                receipt.resource_id, receipt.target
+            ));
+        }
+        for name in w.ports.keys() {
+            plan.steps.push(Step {
+                id: format!("port:{name}"),
+                action: Operation::Forget,
+                target: format!("lease:{}:{name}", w.id),
+                destructive: false,
+            });
+        }
+        for reference in plan.manifest.resources.iter().filter(|r| r.is_reference()) {
+            plan.steps.push(Step {
+                id: reference.id.clone(),
+                action: Operation::Forget,
+                target: format!("reference:{}:{}", w.id, reference.id),
+                destructive: false,
+            });
+        }
+        plan.steps.push(Step {
+            id: "workspace".into(),
+            action: Operation::Unregister,
+            target: format!("workspace:{}", w.id),
+            destructive: false,
+        });
+        plan.fingerprint = adapter::digest(&serde_json::to_vec(&(&plan, &receipts, absent))?);
+        Ok(plan)
+    }
+
     fn command_material(
         &self,
         root: &Path,
@@ -1358,6 +1439,23 @@ impl Engine {
     }
     fn execute_step(&self, g: &Guard, plan: &Plan, step: &Step) -> Result<Option<String>> {
         let w = &plan.workspace;
+        if step.action == Operation::Unregister {
+            if !self.checkout_absent(w)? {
+                return Err(Error::new(
+                    "checkout_present",
+                    "the checkout exists again; review a new plan",
+                ));
+            }
+            let transaction = rusqlite::Transaction::new_unchecked(
+                &g.db,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            g.delete_workspace(&w.id)?;
+            transaction.commit()?;
+            return Ok(Some(serde_json::to_string(
+                &serde_json::json!({"unregistered":w,"name_released":w.name}),
+            )?));
+        }
         if step.action == Operation::Forget {
             let orphaned = self.checkout_absent(w)?;
             let transaction = rusqlite::Transaction::new_unchecked(

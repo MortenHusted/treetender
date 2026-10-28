@@ -450,3 +450,34 @@ fn env_prints_named_lane_values_for_other_tools() {
             .any(|line| line.starts_with("TREETENDER_WORKSPACE_PATH="))
     );
 }
+
+#[test]
+fn removed_lane_unregisters_by_id_after_review_and_keeps_its_history() {
+    let f = Fixture::new();
+    let id = f.ok(&f.lane, &["register"])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    git(
+        &f.primary,
+        &["worktree", "remove", "--force", f.lane.to_str().unwrap()],
+    );
+    let by_id = Path::new(&id);
+    let unreviewed = f.call(by_id, &["unregister", "--apply"]);
+    assert!(!unreviewed.status.success());
+    assert!(String::from_utf8_lossy(&unreviewed.stderr).contains("review_required"));
+    f.reviewed(by_id, &["unregister"]);
+    let listed = f.ok(&f.primary, &["list"]);
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|workspace| workspace["id"] != id.as_str())
+    );
+    let history = f.ok(by_id, &["history"]);
+    assert_eq!(
+        history.as_array().unwrap().last().unwrap()["operation"],
+        "unregister"
+    );
+}

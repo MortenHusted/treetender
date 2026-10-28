@@ -248,6 +248,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Adopt(action) => {
             return action_run(&engine, &workspace, Lifecycle::Adopt, action, cli.json);
         }
+        Command::Unregister(action) => {
+            return action_run(&engine, &workspace, Lifecycle::Unregister, action, cli.json);
+        }
         Command::Tui => {
             if cli.json {
                 bail!("the TUI requires a terminal; use status/plan/apply with --json for agents");
@@ -281,7 +284,7 @@ fn action_run(
         }
         if matches!(
             operation,
-            Lifecycle::Clean | Lifecycle::Forget | Lifecycle::Adopt
+            Lifecycle::Clean | Lifecycle::Forget | Lifecycle::Adopt | Lifecycle::Unregister
         ) && action.expect_fingerprint.as_deref() != Some(&plan.fingerprint)
         {
             return Err(treetender::Error::new("review_required","review a plan first; use apply FILE, or repeat the command with --apply --expect-fingerprint FINGERPRINT").into());
@@ -328,7 +331,7 @@ fn output_plan(plan: &Plan, structured: bool) -> Result<()> {
     );
     println!("Fingerprint: {}", plan.fingerprint);
     println!(
-        "Plan only. Apply a saved plan, or repeat clean/forget/adopt with --apply --expect-fingerprint FINGERPRINT."
+        "Plan only. Apply a saved plan, or repeat clean/forget/adopt/unregister with --apply --expect-fingerprint FINGERPRINT."
     );
     Ok(())
 }
@@ -412,6 +415,7 @@ impl From<Lifecycle> for Operation {
             Lifecycle::Clean => Self::Clean,
             Lifecycle::Forget => Self::Forget,
             Lifecycle::Adopt => Self::Adopt,
+            Lifecycle::Unregister => Self::Unregister,
         }
     }
 }
@@ -433,7 +437,7 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             "global_flags":["--repo PATH","--state-dir PATH","--json"],
             "read_commands":["inspect","status [--usage]","env","list","history","plan OP","agent schema","agent resources","agent read URI"],
             "write_commands":["init","register [--name NAME]","apply FILE","OP --apply"],
-            "operations":["prepare","build","check","start","stop","clean","forget","adopt"],
+            "operations":["prepare","build","check","start","stop","clean","forget","adopt","unregister"],
             "resource_registration":{
                 "passive":{"adapter":"omit","required":["id","kind","target"],"kinds":["file","data","service","agent","custom"],"optional":["ownership","depends_on","ports","description","manager"],"live_observation":false,"allocation_claim":false,"lifecycle_authority":false},
                 "managed":{"adapter":"explicit configuration","types":["file","directory","postgres","portman_root","script","portman"],"allocation_proof":"required for effects"},
@@ -441,7 +445,7 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             },
             "selectors":{"only":"repeat --only RESOURCE_OR_TASK","retain":"repeat --keep RESOURCE"},
             "workflow":["inspect","register explicitly","plan OP --out plan.json","review blockers, effects and exclusions","apply plan.json"],
-            "safety":{"stop":"retain checkout and persistent data","clean":"verified owned selections only; reviewed fingerprint required for --apply","forget":"explicit --only resources; release claims/ports while retaining instances and audit receipts","adopt":"explicit --only resources; mark existing unmarked state (directory: Git-ignored, untracked; postgres: name contains the workspace ident) as owned after review; reviewed fingerprint required for --apply","primary":"protected","force_bypass":false,"scripts":"trusted executable code; not sandboxed"},
+            "safety":{"stop":"retain checkout and persistent data","clean":"verified owned selections only; reviewed fingerprint required for --apply","forget":"explicit --only resources; release claims/ports while retaining instances and audit receipts","adopt":"explicit --only resources; mark existing unmarked state (directory: Git-ignored, untracked; postgres: name contains the workspace ident) as owned after review; reviewed fingerprint required for --apply","unregister":"a linked checkout already removed through Git, with no owned claims left; releases its port leases and references, drops its record and frees its name; history stays readable by ID; reviewed fingerprint required for --apply","primary":"protected","force_bypass":false,"scripts":"trusted executable code; not sandboxed"},
             "resources":"agent resources",
             "adapter_contract":"treetender://adapter"
         })),

@@ -72,6 +72,8 @@ pub enum Command {
     Forget(Action),
     /// Plan claiming explicit existing unmarked state, such as ignored build output.
     Adopt(Action),
+    /// Plan dropping the record of a checkout removed through Git; --apply releases its leases and references and frees its name.
+    Unregister(Action),
     /// Browse workspaces, review plans and apply them through the same policy.
     Tui,
     /// Discover machine interfaces and agent-readable resources.
@@ -91,6 +93,7 @@ pub enum Lifecycle {
     Clean,
     Forget,
     Adopt,
+    Unregister,
 }
 
 impl Lifecycle {
@@ -104,6 +107,7 @@ impl Lifecycle {
             Self::Clean => "clean",
             Self::Forget => "forget",
             Self::Adopt => "adopt",
+            Self::Unregister => "unregister",
         }
     }
 }
@@ -125,7 +129,7 @@ pub struct Action {
     /// Execute the displayed operation. Without this flag, only plan.
     #[arg(long)]
     pub apply: bool,
-    /// Required for clean/forget/adopt --apply: fingerprint of the plan you reviewed.
+    /// Required for clean/forget/adopt/unregister --apply: fingerprint of the plan you reviewed.
     #[arg(long)]
     pub expect_fingerprint: Option<String>,
 }

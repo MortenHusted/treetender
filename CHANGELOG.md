@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `unregister`, which drops the record of a linked checkout already removed through Git after a reviewed plan. It releases the workspace's port leases and references, so a checkout created later at the same path takes the name back instead of registering as `NAME-2`. It refuses while the checkout exists or still owns a claim; history stays readable by ID.
+
 - Clean retires the receipt of an owned directory that a tool such as `cargo clean` recreated without its marker, and keeps the directory. It previously blocked prepare and clean until a reviewed forget.
 
 - `status --usage` counts a hard-linked file once, as `du` does. The docs now state that blocks a tree shares with other lanes through copy-on-write clones or hard links count in full, so the figure can exceed what a clean frees.

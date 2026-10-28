@@ -26,7 +26,7 @@ flowchart TB
   W --> O[Operation journal and build outcomes]
 ```
 
-Ownership and use are separate. A borrowed/shared reference never gains destruction rights. Another registered workspace's protected use can block the owning workspace's cleanup. Removing a checkout does not automatically remove its references or its external resource receipts.
+Ownership and use are separate. A borrowed/shared reference never gains destruction rights. Another registered workspace's protected use can block the owning workspace's cleanup. Removing a checkout does not automatically remove its references or its external resource receipts. Once its receipts are cleaned or forgotten, a reviewed `unregister` releases its leases and references and drops its record.
 
 ## Accounting and execution are separate
 
@@ -54,7 +54,7 @@ Removing an adapter from a managed declaration preserves its old allocation rece
 
 ## Paths and recovery
 
-Paths are current locations, not identities. Re-register an intentionally relocated checkout to reconcile its location and verified file claims. Recycling a worktree path creates a new Git identity; an old record remains addressable by ID for its retained resources, without authorizing access to the replacement checkout's files or scripts.
+Paths are current locations, not identities. Re-register an intentionally relocated checkout to reconcile its location and verified file claims. Recycling a worktree path creates a new Git identity; an old record remains addressable by ID for its retained resources, without authorizing access to the replacement checkout's files or scripts. It keeps its name until `unregister` drops it, so the replacement registers as `NAME-2` until then.
 
 A missing path with live Git metadata is ambiguous: repair and register a moved checkout, or prune through Git only when asserting deletion. If the entire repository/common directory disappears, cleanup and reference release remain blocked until its identity/location is restored. Clean or detach linked resources before permanently deleting the whole repository. Bare-repository layouts currently return an explicit unsupported-layout error.
 

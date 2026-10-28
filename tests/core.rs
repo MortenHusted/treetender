@@ -1751,6 +1751,16 @@ fn forget_cannot_release_a_moved_workspace_with_live_git_metadata() {
             .any(|b| b.contains("Git identity is still live"))
     );
     assert_eq!(f.engine.apply(&plan).unwrap_err().code, "plan_blocked");
+    let unregister = f
+        .engine
+        .plan(&w.id, Operation::Unregister, Selectors::default())
+        .unwrap();
+    assert!(
+        unregister
+            .blockers
+            .iter()
+            .any(|b| b.contains("Git identity is still live"))
+    );
     assert!(moved.join("context").exists());
     assert_eq!(f.engine.status(&w.id).unwrap().resources.len(), 1);
 }
@@ -1791,6 +1801,16 @@ fn moving_the_whole_repository_never_implies_its_workspaces_are_retired() {
         );
         assert_eq!(f.engine.apply(&plan).unwrap_err().code, "plan_blocked");
     }
+    let unregister = f
+        .engine
+        .plan(&w.id, Operation::Unregister, Selectors::default())
+        .unwrap();
+    assert!(
+        unregister
+            .blockers
+            .iter()
+            .any(|b| b.contains("repository location or identity"))
+    );
     assert!(f.proof_file("whole-repository-move").exists());
     assert_eq!(f.engine.status(&w.id).unwrap().resources.len(), 1);
 }
@@ -2410,6 +2430,97 @@ fn workspace_names_are_fixed_unique_and_survive_moves() {
     );
     let declared = f.engine.status(&w.id).unwrap().declarations;
     assert_eq!(declared.resources[0].target, "db:app_lane");
+}
+
+#[test]
+fn unregister_drops_a_removed_lanes_record_and_frees_its_name() {
+    let f = Fixture::new();
+    let manifest = "[ports.web]\nrange=[43110, 43113]\n".to_owned()
+        + "[[resources]]\nid='shared'\nkind='data'\ntarget='unregister-shared'\n"
+        + &f.resource("db", "data", "unregister/{workspace_id}", &[]);
+    f.manifest(&manifest);
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    let plan = |id: &str| {
+        f.engine
+            .plan(id, Operation::Unregister, Selectors::default())
+            .unwrap()
+    };
+    assert!(
+        plan(&w.id)
+            .blockers
+            .iter()
+            .any(|b| b.contains("checkout still exists"))
+    );
+    let primary = f.engine.workspace(f.primary.to_str().unwrap()).unwrap();
+    assert!(
+        plan(&primary.id)
+            .blockers
+            .iter()
+            .any(|b| b.contains("primary workspace"))
+    );
+    assert_eq!(
+        f.engine
+            .plan(&w.id, Operation::Unregister, Fixture::only("db"))
+            .unwrap_err()
+            .code,
+        "selector"
+    );
+
+    git(
+        &f.primary,
+        &["worktree", "remove", "--force", f.lane.to_str().unwrap()],
+    );
+    let blocked = plan(&w.id);
+    assert!(
+        blocked
+            .blockers
+            .iter()
+            .any(|b| b.contains("db still has an owned claim"))
+    );
+    assert_eq!(f.engine.apply(&blocked).unwrap_err().code, "plan_blocked");
+    assert!(f.apply(&w, Operation::Clean, Selectors::default()).success);
+
+    let reviewed = plan(&w.id);
+    assert!(reviewed.blockers.is_empty(), "{:?}", reviewed.blockers);
+    assert_eq!(
+        reviewed
+            .steps
+            .iter()
+            .map(|s| (s.id.as_str(), s.destructive))
+            .collect::<Vec<_>>(),
+        [("port:web", false), ("shared", false), ("workspace", false)]
+    );
+    assert!(f.engine.apply(&reviewed).unwrap().success);
+    assert!(f.engine.list().unwrap().iter().all(|o| o.id != w.id));
+    let lease = format!("lease:{}:", w.id);
+    assert!(registry_rows(&f)[4].iter().all(|row| match &row[1] {
+        rusqlite::types::Value::Text(target) => !target.starts_with(&lease),
+        _ => true,
+    }));
+    let history = f.engine.history(&w.id).unwrap();
+    assert_eq!(
+        history.last().map(|op| (op.operation, op.state.as_str())),
+        Some((Operation::Unregister, "completed"))
+    );
+
+    git(
+        &f.primary,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "replacement",
+            f.lane.to_str().unwrap(),
+        ],
+    );
+    f.manifest(&manifest);
+    let again = f.register();
+    assert_ne!(again.id, w.id);
+    assert_eq!(again.name, "lane");
 }
 
 #[test]

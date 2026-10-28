@@ -142,14 +142,12 @@ impl App {
         } else {
             vec![]
         };
-        let plan = engine.plan(
-            &self.workspace,
-            operation,
-            Selectors {
-                only,
-                retain: self.retained.iter().cloned().collect(),
-            },
-        )?;
+        let retain = if operation == Operation::Unregister {
+            vec![]
+        } else {
+            self.retained.iter().cloned().collect()
+        };
+        let plan = engine.plan(&self.workspace, operation, Selectors { only, retain })?;
         self.detail = serde_json::to_string_pretty(&plan)?;
         self.message = if plan.blockers.is_empty() {
             format!(
@@ -222,6 +220,7 @@ pub fn run(engine: Engine, workspace: String) -> Result<()> {
             KeyCode::Char('6') => Some(Operation::Clean),
             KeyCode::Char('7') => Some(Operation::Forget),
             KeyCode::Char('8') => Some(Operation::Adopt),
+            KeyCode::Char('9') => Some(Operation::Unregister),
             _ => None,
         };
         let result = if let Some(operation) = operation {
@@ -357,7 +356,7 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
     );
     let footer = vec![
         Line::from(
-            "1 prepare  2 build  3 check  4 start  5 stop  6 clean  7 forget selected  8 adopt selected",
+            "1 prepare  2 build  3 check  4 start  5 stop  6 clean  7 forget selected  8 adopt selected  9 unregister removed",
         ),
         Line::from("a apply reviewed plan · r register · g refresh · Esc cancel · q quit"),
         Line::from(app.message.as_str()).style(Style::default().fg(Color::Yellow)),
