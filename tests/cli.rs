@@ -419,3 +419,34 @@ fn reviewed_adopt_lets_clean_reclaim_existing_build_output() {
     assert!(!f.lane.join("target").exists());
     assert!(f.lane.join("README.md").exists());
 }
+
+#[test]
+fn env_prints_named_lane_values_for_other_tools() {
+    let f = Fixture::new();
+    let registered = f.ok(&f.lane, &["register", "--name", "feature-x"]);
+    assert_eq!(registered["name"], "feature-x");
+    let values = f.ok(&f.lane, &["env"]);
+    assert_eq!(values["TREETENDER_WORKSPACE_NAME"], "feature-x");
+    assert_eq!(values["TREETENDER_WORKSPACE_IDENT"], "feature_x");
+    assert_eq!(values["TREETENDER_WORKSPACE_ID"], registered["id"]);
+    let renamed = f.call(&f.lane, &["register", "--name", "other"]);
+    assert!(!renamed.status.success());
+    let dotenv = binary()
+        .arg("--state-dir")
+        .arg(&f.state)
+        .arg("--repo")
+        .arg(&f.lane)
+        .arg("env")
+        .output()
+        .unwrap();
+    assert!(dotenv.status.success());
+    let text = String::from_utf8(dotenv.stdout).unwrap();
+    assert!(
+        text.lines()
+            .any(|line| line == "TREETENDER_WORKSPACE_NAME=feature-x")
+    );
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("TREETENDER_WORKSPACE_PATH="))
+    );
+}

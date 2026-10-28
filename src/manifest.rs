@@ -41,6 +41,31 @@ pub struct Resource {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manager: Option<String>,
+    #[serde(default, skip_serializing_if = "Scope::is_all")]
+    pub scope: Scope,
+}
+
+/// Which checkouts a declaration applies to. Mostly useful in the primary's
+/// private overlay, which linked checkouts inherit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    #[default]
+    All,
+    Linked,
+    Primary,
+}
+impl Scope {
+    fn is_all(&self) -> bool {
+        *self == Scope::All
+    }
+    fn applies(self, primary: bool) -> bool {
+        match self {
+            Scope::All => true,
+            Scope::Linked => !primary,
+            Scope::Primary => primary,
+        }
+    }
 }
 
 impl Resource {
@@ -121,6 +146,8 @@ pub struct Task {
     pub outputs: Vec<String>,
     #[serde(default = "timeout")]
     pub timeout_secs: u64,
+    #[serde(default, skip_serializing_if = "Scope::is_all")]
+    pub scope: Scope,
 }
 
 pub fn relative(path: &str) -> Result<()> {
@@ -164,10 +191,17 @@ pub(crate) fn writable_destination(path: &str) -> Result<()> {
 }
 
 impl Manifest {
-    pub fn load(root: &Path) -> Result<Self> {
+    /// Loads a checkout's declarations. A linked checkout also inherits the
+    /// primary checkout's private overlay, layered between its own two files.
+    pub fn load(root: &Path, primary_root: &Path) -> Result<Self> {
+        let primary = root == primary_root;
+        let mut files = vec![root.join("treetender.toml")];
+        if !primary {
+            files.push(primary_root.join(".treetender.local.toml"));
+        }
+        files.push(root.join(".treetender.local.toml"));
         let mut result = Self::default();
-        for name in ["treetender.toml", ".treetender.local.toml"] {
-            let path = root.join(name);
+        for path in files {
             match std::fs::symlink_metadata(&path) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e.into()),
@@ -205,6 +239,8 @@ impl Manifest {
                 result.tasks.push(task);
             }
         }
+        result.resources.retain(|r| r.scope.applies(primary));
+        result.tasks.retain(|t| t.scope.applies(primary));
         result.resources.sort_by(|a, b| a.id.cmp(&b.id));
         result.tasks.sort_by(|a, b| a.id.cmp(&b.id));
         result.validate()?;

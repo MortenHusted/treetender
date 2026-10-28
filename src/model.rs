@@ -46,6 +46,51 @@ pub struct Workspace {
     pub git_dir: PathBuf,
     pub common_dir: PathBuf,
     pub primary: bool,
+    /// Human-readable and DNS-safe; fixed at first registration so names derived
+    /// from it survive moves. Empty only for records registered before names.
+    #[serde(default)]
+    pub name: String,
+}
+
+impl Workspace {
+    /// The name with `-` replaced by `_`, safe as an unquoted SQL identifier part.
+    pub fn ident(&self) -> String {
+        self.name.replace('-', "_")
+    }
+
+    /// Replaces known workspace placeholders; any other text is left as is.
+    pub fn substitute(&self, text: &str) -> Result<String> {
+        if self.name.is_empty()
+            && (text.contains("{workspace_name}") || text.contains("{workspace_ident}"))
+        {
+            return Err(Error::new(
+                "unnamed_workspace",
+                "register this workspace again to assign the name its placeholders need",
+            ));
+        }
+        Ok(text
+            .replace("{workspace_id}", &self.id)
+            .replace("{repository_id}", &self.repository_id)
+            .replace("{workspace_name}", &self.name)
+            .replace("{workspace_ident}", &self.ident()))
+    }
+
+    /// Lane values exported to tasks and script adapters.
+    pub fn environment(&self) -> Vec<(String, String)> {
+        vec![
+            ("TREETENDER_WORKSPACE_ID".into(), self.id.clone()),
+            ("TREETENDER_WORKSPACE_NAME".into(), self.name.clone()),
+            ("TREETENDER_WORKSPACE_IDENT".into(), self.ident()),
+            (
+                "TREETENDER_WORKSPACE_PATH".into(),
+                self.path.to_string_lossy().into_owned(),
+            ),
+            (
+                "TREETENDER_REPOSITORY_ID".into(),
+                self.repository_id.clone(),
+            ),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
