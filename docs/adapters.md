@@ -151,6 +151,37 @@ service = "my-web"
 socket = "/machine-specific/portman.sock"
 ```
 
-A missing or empty service identifier is invalid. Inspection refuses ambiguous duplicate service names and unavailable or incompatible daemon responses. It does not synchronize configuration or start services. Managed service effects require a script adapter with real provider ownership proof.
+A missing or empty service identifier is invalid. Inspection refuses ambiguous duplicate service names and unavailable or incompatible daemon responses. It does not synchronize configuration or start services.
 
-Portman's CLI `up` synchronizes the entire repository configuration before starting the requested subset. It cannot safely be treated as an isolated single-resource command. TreeTender does not invoke `up`, an empty global selection or repository-wide forgetting on your behalf.
+Portman's CLI `up` synchronizes the entire configuration root it finds before starting it, so TreeTender never runs it in a repository's own root. A lane-owned root is different: everything in it belongs to the lane.
+
+### Portman lane roots
+
+```toml
+[[resources]]
+id = "services"
+kind = "service"
+[resources.adapter]
+type = "portman_root"
+root = "tmp/workspace/portman"
+
+[[resources]]
+id = "services-config"
+kind = "file"
+depends_on = ["services"]
+[resources.adapter]
+type = "file"
+source_root = "primary"
+source = "portman.lane.template.toml"
+destination = "tmp/workspace/portman/portman.local.toml"
+mode = "template"
+```
+
+A `portman_root` resource owns a directory inside the checkout and every service Portman registers under that exact root. Portman service names are global, so the rendered config should prefix them with `{workspace_name}`; its `dir` and `env_files` are relative to the root. The directory carries the same ownership marker as a [directory resource](#owned-directories), and adopt works the same way.
+
+- `prepare` creates the root directory. Render its config with a template resource that depends on it.
+- `start` requires `portman.toml` or `portman.local.toml` in the root itself, so the CLI cannot walk up to an ancestor's config, then runs `portman up` there.
+- `stop` asks the daemon for the services whose root is exactly this one and stops them by name; it never sends an empty selection, which Portman reads as every service.
+- `clean` runs `portman down --forget --root <root>`, confirms that no service remains registered for the root, then removes the directory.
+
+`socket` defaults to the socket Portman's CLI uses for the current user; set an absolute path to override it, and `command` to run a different `portman`. Clean before removing the checkout: a root whose checkout is already gone leaves its registrations for `portman down --forget --root`.
