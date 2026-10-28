@@ -28,6 +28,17 @@ type = "directory"
 path = "target"
 ```
 
+### Port leases
+
+Declare named ports and the range to lease them from:
+
+```toml
+[ports.web]
+range = [3900, 4099]
+```
+
+`register` leases each name to the workspace: the same lane starts from the same position in the range, skips ports that another workspace holds or a local listener occupies, and keeps its lease across restarts, stop and clean. Two lanes never share a leased port, even while one is stopped. A lease moves only when its range changes, and is released when its name leaves the declarations or by `forget --only port:web`. Use the lease as `{port:web}` in targets and as `TREETENDER_PORT_WEB` in commands.
+
 Tasks and adapter commands receive the lane values as `TREETENDER_*` environment variables. `treetender env` prints them as dotenv lines for direnv, mise or a process manager's env file; `--json env` returns an object.
 
 ## Review and execute

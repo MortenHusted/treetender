@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Lease named host ports to each workspace from a declared `[ports.NAME] range`. Leases are stable per lane, skip ports held by other workspaces or occupied by listeners, survive stop and clean, and are released by removing the declaration or `forget --only port:NAME`. Use them as `{port:NAME}` and `TREETENDER_PORT_NAME`.
+
 - Linked checkouts inherit the primary checkout's private `.treetender.local.toml`, between their own two manifests. Declarations and tasks take `scope = "linked" | "primary"` to apply to one side only.
 - Workspaces get a name at first registration (`register --name`, or derived from the directory), unique per repository and fixed afterwards. Targets accept `{workspace_name}` and `{workspace_ident}`.
 - Tasks and adapter commands receive `TREETENDER_WORKSPACE_*` and `TREETENDER_REPOSITORY_ID` environment variables; `treetender env` prints them as dotenv lines.
