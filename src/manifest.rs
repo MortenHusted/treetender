@@ -106,6 +106,9 @@ pub enum Adapter {
         mode: FileMode,
         #[serde(default)]
         source_root: SourceRoot,
+        /// Skip, rather than block on, a source that does not exist.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
     },
     Script {
         command: Vec<String>,
@@ -135,6 +138,8 @@ pub enum FileMode {
     #[default]
     Copy,
     Link,
+    /// A private copy with workspace placeholders substituted.
+    Template,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]

@@ -451,7 +451,8 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             {"uri":"treetender://registry","title":"Registry and resource relationships","mime_type":"text/markdown"},
             {"uri":"treetender://manifest","title":"Minimal portable manifest","mime_type":"text/plain"},
             {"uri":"treetender://inventory","title":"Passive resource inventory example","mime_type":"text/plain"},
-            {"uri":"treetender://build-output","title":"Owned build output directories example","mime_type":"text/plain"}
+            {"uri":"treetender://build-output","title":"Owned build output directories example","mime_type":"text/plain"},
+            {"uri":"treetender://lane-overlay","title":"Private overlay preparing every lane","mime_type":"text/plain"}
         ])),
         AgentCommand::Read { uri } => {
             let text = match uri.as_str() {
@@ -461,6 +462,7 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
                 "treetender://manifest" => include_str!("../examples/minimal.toml"),
                 "treetender://inventory" => include_str!("../examples/inventory.toml"),
                 "treetender://build-output" => include_str!("../examples/build-output.toml"),
+                "treetender://lane-overlay" => include_str!("../examples/lane-overlay.toml"),
                 _ => bail!(
                     "unknown resource URI {uri}; discover available URIs with agent resources"
                 ),

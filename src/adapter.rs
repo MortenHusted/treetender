@@ -218,6 +218,91 @@ fn snapshot_open(mut file: File, depth: usize, count: &mut usize) -> Result<Stri
     }
     Ok(format!("tree:{}", digest(&serde_json::to_vec(&entries)?)))
 }
+fn create_private(dir: &File, name: &CString) -> Result<File> {
+    // SAFETY: O_EXCL refuses existing files or symlinks atomically.
+    fd_file(unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    })
+}
+
+/// Substitutes known workspace placeholders in a UTF-8 template and leaves
+/// other braces (YAML, TOML, ERB) alone. An undeclared port is an error.
+pub(crate) fn render(w: &Workspace, root: &Path, source: &str) -> Result<String> {
+    const LIMIT: u64 = 1024 * 1024;
+    let mut text = String::new();
+    read_regular(root, source)?
+        .take(LIMIT + 1)
+        .read_to_string(&mut text)
+        .map_err(|_| Error::new("template", format!("{source} is not UTF-8 text")))?;
+    if text.len() as u64 > LIMIT {
+        return Err(Error::new("input_limit", format!("{source} exceeds 1 MiB")));
+    }
+    let rendered = w.substitute(&text)?;
+    if let Some(start) = rendered.find("{port:") {
+        let token = rendered[start..].split('}').next().unwrap_or_default();
+        return Err(Error::new(
+            "template",
+            format!("{source} uses {token}}} without a declared port lease"),
+        ));
+    }
+    Ok(rendered)
+}
+
+/// Identity of a link source without following it, or None when it is absent.
+/// Any file, directory or symlink can be linked; its parents cannot be symlinks.
+pub(crate) fn link_source(root: &Path, source: &str) -> Result<Option<String>> {
+    let Some((dir, name)) = anchored_parent(root, source)? else {
+        return Ok(None);
+    };
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: stat points at writable storage; AT_SYMLINK_NOFOLLOW observes the leaf.
+    if unsafe {
+        libc::fstatat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } < 0
+    {
+        let e = std::io::Error::last_os_error();
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(e.into());
+    }
+    // SAFETY: successful fstatat initialized stat.
+    let stat = unsafe { stat.assume_init() };
+    Ok(Some(format!(
+        "{}:{}:{}",
+        stat.st_mode & libc::S_IFMT,
+        stat.st_dev,
+        stat.st_ino
+    )))
+}
+
+/// Plan material for a file resource's source, or None when it is absent.
+pub(crate) fn source_material(
+    w: &Workspace,
+    root: &Path,
+    source: &str,
+    mode: FileMode,
+) -> Result<Option<String>> {
+    if link_source(root, source)?.is_none() {
+        return Ok(None);
+    }
+    match mode {
+        FileMode::Copy => file_snapshot(root, source).map(Some),
+        FileMode::Template => Ok(Some(digest(render(w, root, source)?.as_bytes()))),
+        FileMode::Link => link_source(root, source),
+    }
+}
+
 /// The anchored parent of a relative path, or None when a parent is missing.
 /// A missing parent proves absence; a symlinked parent never does.
 pub(crate) fn anchored_parent(root: &Path, relative: &str) -> Result<Option<(File, CString)>> {
@@ -293,7 +378,7 @@ fn proof_at(
     // SAFETY: successful fstatat initialized stat.
     let stat = unsafe { stat.assume_init() };
     let content = match mode {
-        FileMode::Copy => {
+        FileMode::Copy | FileMode::Template => {
             // SAFETY: anchored leaf is opened without following symlinks.
             let mut file = fd_file(unsafe {
                 libc::openat(
@@ -537,6 +622,7 @@ pub(crate) fn invoke(
             destination,
             mode,
             source_root,
+            ..
         }) => {
             crate::manifest::writable_destination(destination)?;
             if action != "inspect" && !crate::git::is_current(w)? {
@@ -552,27 +638,31 @@ pub(crate) fn invoke(
                         SourceRoot::Workspace => w.path.clone(),
                         SourceRoot::Primary => crate::git::discover(&w.path)?.primary_path,
                     };
-                    let mut source_file = read_regular(&source_path, source)?;
-                    let (dir, name) = parent(&w.path, destination, true)?;
                     match mode {
                         FileMode::Copy => {
-                            // SAFETY: O_EXCL refuses existing files or symlinks atomically.
-                            let mut out = fd_file(unsafe {
-                                libc::openat(
-                                    dir.as_raw_fd(),
-                                    name.as_ptr(),
-                                    libc::O_WRONLY
-                                        | libc::O_CREAT
-                                        | libc::O_EXCL
-                                        | libc::O_NOFOLLOW
-                                        | libc::O_CLOEXEC,
-                                    0o600,
-                                )
-                            })?;
+                            let mut source_file = read_regular(&source_path, source)?;
+                            let (dir, name) = parent(&w.path, destination, true)?;
+                            let mut out = create_private(&dir, &name)?;
                             std::io::copy(&mut source_file, &mut out)?;
                             out.sync_all()?;
+                            dir.sync_all()?;
+                        }
+                        FileMode::Template => {
+                            let rendered = render(w, &source_path, source)?;
+                            let (dir, name) = parent(&w.path, destination, true)?;
+                            let mut out = create_private(&dir, &name)?;
+                            out.write_all(rendered.as_bytes())?;
+                            out.sync_all()?;
+                            dir.sync_all()?;
                         }
                         FileMode::Link => {
+                            if link_source(&source_path, source)?.is_none() {
+                                return Err(Error::new(
+                                    "source_missing",
+                                    format!("link source {source} does not exist"),
+                                ));
+                            }
+                            let (dir, name) = parent(&w.path, destination, true)?;
                             let link = cstring(&source_path.join(source).to_string_lossy())?;
                             // SAFETY: both strings and the anchored parent descriptor are valid.
                             if unsafe {
@@ -581,9 +671,9 @@ pub(crate) fn invoke(
                             {
                                 return Err(std::io::Error::last_os_error().into());
                             }
+                            dir.sync_all()?;
                         }
                     }
-                    dir.sync_all()?;
                 }
                 "destroy" => {
                     return quarantine_delete(&w.path, destination, *mode, token, receipt);

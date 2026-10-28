@@ -2470,3 +2470,99 @@ fn port_leases_skip_listeners_report_exhaustion_and_follow_range_changes() {
     f.manifest("");
     assert!(f.register().ports.is_empty());
 }
+
+#[test]
+fn templates_render_lane_values_and_keep_other_braces() {
+    let f = Fixture::new();
+    fs::write(
+        f.primary.join("database.yml.template"),
+        "default: &default\n  pool: <%= ENV.fetch(\"MAX\") { 5 } %>\ndevelopment:\n  database: app_development_{workspace_ident}\nflow: {a: 1}\nhost: {workspace_name}.app.test:{port:web}\n",
+    )
+    .unwrap();
+    let port = free_port();
+    f.manifest(&format!(
+        "[ports.web]\nrange=[{port}, {port}]\n[[resources]]\nid='database-config'\nkind='file'\n[resources.adapter]\ntype='file'\nsource_root='primary'\nsource='database.yml.template'\ndestination='config/database.yml'\nmode='template'\n"
+    ));
+    let w = f.engine.register_named(&f.lane, Some("feature-x")).unwrap();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    assert_eq!(
+        fs::read_to_string(f.lane.join("config/database.yml")).unwrap(),
+        format!(
+            "default: &default\n  pool: <%= ENV.fetch(\"MAX\") {{ 5 }} %>\ndevelopment:\n  database: app_development_feature_x\nflow: {{a: 1}}\nhost: feature-x.app.test:{port}\n"
+        )
+    );
+    // Edits to the rendered file are preserved, like copies.
+    fs::write(f.lane.join("config/database.yml"), "edited").unwrap();
+    let clean = f
+        .engine
+        .plan(&w.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    assert!(!clean.blockers.is_empty());
+    assert_eq!(
+        fs::read_to_string(f.lane.join("config/database.yml")).unwrap(),
+        "edited"
+    );
+
+    fs::write(f.primary.join("other.template"), "port {port:api}\n").unwrap();
+    f.manifest(&format!(
+        "[ports.web]\nrange=[{port}, {port}]\n[[resources]]\nid='other'\nkind='file'\n[resources.adapter]\ntype='file'\nsource_root='primary'\nsource='other.template'\ndestination='other'\nmode='template'\n"
+    ));
+    let undeclared = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    assert!(
+        undeclared.blockers.iter().any(|b| b.contains("{port:api}")),
+        "{:?}",
+        undeclared.blockers
+    );
+}
+
+#[test]
+fn directory_links_and_optional_sources_follow_the_primary_checkout() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.primary.join(".claude/skills/review")).unwrap();
+    fs::write(f.primary.join(".claude/skills/review/SKILL.md"), "skill").unwrap();
+    let link = |id: &str, path: &str| {
+        format!(
+            "[[resources]]\nid='{id}'\nkind='agent'\n[resources.adapter]\ntype='file'\nsource_root='primary'\nsource='{path}'\ndestination='{path}'\nmode='link'\noptional=true\n"
+        )
+    };
+    f.manifest(&format!(
+        "{}{}",
+        link("skills", ".claude/skills"),
+        link("codex", ".codex")
+    ));
+    let w = f.register();
+    let plan = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
+    assert!(
+        plan.exclusions
+            .iter()
+            .any(|e| e.id == "codex" && e.reason.contains("optional source is absent"))
+    );
+    assert!(f.engine.apply(&plan).unwrap().success);
+    assert_eq!(
+        fs::read_to_string(f.lane.join(".claude/skills/review/SKILL.md")).unwrap(),
+        "skill"
+    );
+    assert!(
+        fs::symlink_metadata(f.lane.join(".claude/skills"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(!f.lane.join(".codex").exists());
+    assert!(f.apply(&w, Operation::Clean, Selectors::default()).success);
+    assert!(fs::symlink_metadata(f.lane.join(".claude/skills")).is_err());
+    assert_eq!(
+        fs::read_to_string(f.primary.join(".claude/skills/review/SKILL.md")).unwrap(),
+        "skill"
+    );
+}
