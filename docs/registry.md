@@ -48,6 +48,8 @@ Removing an adapter from a managed declaration preserves its old allocation rece
 
 `clean` selects verified owned resources for actual destruction. It preserves primary/shared/borrowed resources, retained dependencies and edited files. The caller reviews a frozen plan before applying it. An unavailable provider, unknown ownership or a changed exact instance blocks effects.
 
+`adopt --only RESOURCE` plans claiming existing unmarked state through an adapter that supports adoption. The plan freezes the observed instance; apply records a new allocation receipt only for that exact instance. It never adopts a primary workspace resource or state that already has a receipt.
+
 `forget --only RESOURCE` plans releasing TreeTender's claim, ports or an orphaned reference while retaining the instance. It preserves receipt provenance in operation history. It is the recovery route when a provider context cannot be verified or a generated file has become user-owned state. It never adopts an object on a future prepare.
 
 ## Paths and recovery

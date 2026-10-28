@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add owned directory resources for per-lane build and dependency output, proven by an ownership marker and removed descriptor-relatively on clean. A reviewed `adopt --only RESOURCE` claims existing ignored, untracked output; `status --usage` reports allocated bytes.
+
 - Add adapter-free passive resource declarations with purpose/manager notes, CLI/TUI accounting and agent discovery. Passive references never allocate, observe or mutate backend resources and remain protective during cleanup.
 
 - Initial Rust CLI, TUI and structured agent interface.
