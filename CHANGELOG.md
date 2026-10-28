@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add Portman lane roots: a lane-owned config directory whose services TreeTender starts with `portman up` in that root, stops by explicit name, and forgets with `down --forget --root` before removing the directory.
+
 - Add PostgreSQL database resources managed through `psql`, with an ownership marker in the database comment, a same-session recheck before `DROP DATABASE`, and reviewed adoption of existing lane-named databases. CI exercises them against a disposable cluster.
 
 - File resources gain `mode = "template"`, which renders workspace placeholders and port leases into a private copy, link to directories as well as files, and take `optional = true` to skip an absent source.

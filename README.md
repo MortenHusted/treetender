@@ -71,7 +71,7 @@ Adapters and tasks are trusted executable code, with the user's normal permissio
 
 ## Integrations and scope
 
-The initial implementation includes explicit file copy/link operations, owned directories for per-lane build output, generic JSON command adapters, dependency ordering, build/check artifacts and a read-only Portman service observer. Managed service effects use adapters with real instance/ownership proof. The Portman observer does not synchronize config, start/stop services or adopt registrations.
+The initial implementation includes explicit file copy/link operations, owned directories for per-lane build output, generic JSON command adapters, dependency ordering, build/check artifacts, PostgreSQL databases, Portman lane roots and a read-only Portman service observer. Managed service effects use adapters with real instance/ownership proof. The Portman observer does not synchronize config, start/stop services or adopt registrations; a Portman lane root starts, stops and forgets only the services registered under its own directory.
 
 The namespace example models database and storage lanes in disposable files. It demonstrates optional managed effects and is not a database driver. Integrations that actually create or destroy resources must implement the ownership contract; associations with externally managed resources do not grant those capabilities. Build artifacts are observed and retained; destructive artifact cleanup requires an explicitly managed resource, such as a directory resource for a lane's `target/` or `node_modules/`.
 

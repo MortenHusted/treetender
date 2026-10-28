@@ -433,6 +433,7 @@ pub(crate) fn target(w: &Workspace, resource: &Resource) -> String {
     match resource.adapter.as_ref() {
         Some(Adapter::File { destination, .. }) => format!("file:{}:{destination}", w.id),
         Some(Adapter::Directory { path }) => format!("dir:{}:{path}", w.id),
+        Some(Adapter::PortmanRoot { root, .. }) => format!("portman-root:{}:{root}", w.id),
         Some(Adapter::Postgres {
             database,
             service,
@@ -561,13 +562,18 @@ pub(crate) fn supports(resource: &Resource, action: &str) -> bool {
         Some(Adapter::Directory { .. } | Adapter::Postgres { .. }) => {
             ["inspect", "prepare", "destroy", "adopt"].contains(&action)
         }
+        Some(Adapter::PortmanRoot { .. }) => {
+            ["inspect", "prepare", "start", "stop", "destroy", "adopt"].contains(&action)
+        }
     }
 }
 
 /// Read-only checks an adapter requires before existing state may be adopted.
 pub(crate) fn adoptable(w: &Workspace, resource: &Resource) -> Result<()> {
     match resource.adapter.as_ref() {
-        Some(Adapter::Directory { path }) => crate::directory::adoptable(w, path),
+        Some(Adapter::Directory { path } | Adapter::PortmanRoot { root: path, .. }) => {
+            crate::directory::adoptable(w, path)
+        }
         Some(Adapter::Postgres { database, .. }) => crate::postgres::adoptable(w, database),
         _ => Err(Error::new(
             "capability",
@@ -603,7 +609,7 @@ pub(crate) fn inspect(
             }
             Ok(proof)
         }
-        Some(Adapter::Directory { path }) => {
+        Some(Adapter::Directory { path } | Adapter::PortmanRoot { root: path, .. }) => {
             if !crate::git::is_current(w)? {
                 return Ok(Proof::missing());
             }
@@ -762,7 +768,7 @@ pub(crate) fn invoke(
         }
         Some(Adapter::Portman {
             service, socket, ..
-        }) => portman_status(socket, service),
+        }) => crate::portman::status(socket, service),
         Some(Adapter::Directory { path }) => {
             crate::manifest::writable_destination(path)?;
             if action != "inspect" && !crate::git::is_current(w)? {
@@ -777,6 +783,50 @@ pub(crate) fn invoke(
                 "adopt" => crate::directory::adopt(w, &resource.id, path, token, receipt),
                 "destroy" => crate::directory::destroy(&w.path, path, token, receipt),
                 _ => Err(Error::new("capability", "directory action unsupported")),
+            }
+        }
+        Some(Adapter::PortmanRoot {
+            root,
+            socket,
+            command,
+            timeout_secs,
+        }) => {
+            crate::manifest::writable_destination(root)?;
+            if action != "inspect" && !crate::git::is_current(w)? {
+                return Err(Error::new(
+                    "checkout_unavailable",
+                    "Portman root effects require the original current checkout",
+                ));
+            }
+            let path = w.path.join(root);
+            let socket = match socket {
+                Some(socket) => socket.clone(),
+                None => crate::portman::default_socket()?,
+            };
+            match action {
+                "inspect" => crate::directory::proof(&w.path, root, token),
+                "prepare" => crate::directory::prepare(w, &resource.id, root, token),
+                "adopt" => crate::directory::adopt(w, &resource.id, root, token, receipt),
+                "start" => {
+                    crate::portman::start(command, &path, w, *timeout_secs)?;
+                    crate::directory::proof(&w.path, root, token)
+                }
+                "stop" => {
+                    crate::portman::stop(&socket, &path)?;
+                    crate::directory::proof(&w.path, root, token)
+                }
+                "destroy" => {
+                    crate::portman::forget(
+                        command,
+                        &socket,
+                        &path,
+                        w,
+                        recovery_dir,
+                        *timeout_secs,
+                    )?;
+                    crate::directory::destroy(&w.path, root, token, receipt)
+                }
+                _ => Err(Error::new("capability", "Portman root action unsupported")),
             }
         }
         Some(adapter @ Adapter::Postgres { .. }) => {
@@ -954,55 +1004,6 @@ pub(crate) fn run(
             ));
         }
         std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-// Portman protocol: four-byte big-endian length + tagged JSON, one request per
-// connection. Only ServiceStatus is used; no config sync or implicit adoption.
-fn portman_status(socket: &str, service: &str) -> Result<Proof> {
-    use std::os::unix::net::UnixStream;
-    let mut stream = UnixStream::connect(socket)
-        .map_err(|e| Error::new("adapter_unavailable", e.to_string()))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let request = br#"{"kind":"service_status"}"#;
-    stream.write_all(&(request.len() as u32).to_be_bytes())?;
-    stream.write_all(request)?;
-    let mut size = [0u8; 4];
-    stream.read_exact(&mut size)?;
-    let size = u32::from_be_bytes(size) as usize;
-    if size > 1024 * 1024 {
-        return Err(Error::new("adapter_output", "Portman frame exceeds 1 MiB"));
-    }
-    let mut body = vec![0u8; size];
-    stream.read_exact(&mut body)?;
-    let value: serde_json::Value = serde_json::from_slice(&body)?;
-    if value.get("kind").and_then(|v| v.as_str()) != Some("service_statuses") {
-        return Err(Error::new(
-            "adapter_proof",
-            "Portman did not return service_statuses (authenticated brokers require a trusted wrapper)",
-        ));
-    }
-    let services = value
-        .get("services")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| Error::new("adapter_proof", "Portman omitted services"))?;
-    let found: Vec<_> = services
-        .iter()
-        .filter(|s| s.get("name").and_then(|v| v.as_str()) == Some(service))
-        .collect();
-    match found.as_slice() {
-        [] => Ok(Proof::missing()),
-        [value] => Ok(Proof {
-            presence: Presence::Present,
-            instance: Some(service.into()),
-            owner_token: None,
-            handle: (*value).clone(),
-        }),
-        _ => Err(Error::new(
-            "adapter_proof",
-            "Portman returned duplicate exact service names",
-        )),
     }
 }
 

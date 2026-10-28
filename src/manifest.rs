@@ -125,6 +125,18 @@ pub enum Adapter {
     Directory {
         path: String,
     },
+    /// A Portman config root inside the checkout. The lane owns the directory
+    /// and every service Portman registers under that exact root.
+    PortmanRoot {
+        root: String,
+        /// Daemon socket; defaults to the one Portman's CLI uses.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        socket: Option<String>,
+        #[serde(default = "portman")]
+        command: Vec<String>,
+        #[serde(default = "portman_timeout")]
+        timeout_secs: u64,
+    },
     /// One database on a PostgreSQL server, managed through `psql`.
     /// Credentials come from libpq (service file, password file, PG* variables).
     Postgres {
@@ -150,6 +162,10 @@ impl Adapter {
     pub fn is_external(&self) -> bool {
         matches!(self, Adapter::Script { .. } | Adapter::Postgres { .. })
     }
+}
+fn portman_timeout() -> u64 {
+    // `portman up` waits up to two minutes for readiness.
+    180
 }
 fn psql() -> Vec<String> {
     vec!["psql".into()]
@@ -370,6 +386,18 @@ impl Manifest {
                     }
                 }
                 Some(Adapter::Directory { path }) => writable_destination(path)?,
+                Some(Adapter::PortmanRoot {
+                    root,
+                    socket,
+                    command,
+                    timeout_secs,
+                }) => {
+                    writable_destination(root)?;
+                    validate_command(command, *timeout_secs)?;
+                    if socket.as_ref().is_some_and(|s| !Path::new(s).is_absolute()) {
+                        return Err(Error::new("manifest", "Portman socket must be absolute"));
+                    }
+                }
                 Some(Adapter::Postgres {
                     database,
                     command,
