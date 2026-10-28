@@ -69,16 +69,27 @@ source = "config/database.yml.template"
 destination = "config/database.yml"
 mode = "template"
 
-# A process manager's config with: host = "{workspace_name}.app.test", port = {port:web}
+# The lane's own Portman stack: a config root inside the lane, and its config
+# rendered from a template whose services are named {workspace_name}-web, with
+# host = "{workspace_name}.app.test", port = {port:web} and dir = "../../..".
+[[resources]]
+id = "services"
+kind = "service"
+scope = "linked"
+[resources.adapter]
+type = "portman_root"
+root = "tmp/workspace/portman"
+
 [[resources]]
 id = "services-config"
 kind = "file"
 scope = "linked"
+depends_on = ["services"]
 [resources.adapter]
 type = "file"
 source_root = "primary"
-source = "services.lane.template.toml"
-destination = "services.local.toml"
+source = "portman.lane.template.toml"
+destination = "tmp/workspace/portman/portman.local.toml"
 mode = "template"
 
 # Per-lane build output that clean can reclaim.

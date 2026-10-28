@@ -436,7 +436,7 @@ fn agent_resource(command: &AgentCommand) -> Result<Value> {
             "operations":["prepare","build","check","start","stop","clean","forget","adopt"],
             "resource_registration":{
                 "passive":{"adapter":"omit","required":["id","kind","target"],"kinds":["file","data","service","agent","custom"],"optional":["ownership","depends_on","ports","description","manager"],"live_observation":false,"allocation_claim":false,"lifecycle_authority":false},
-                "managed":{"adapter":"explicit configuration","types":["file","directory","postgres","script","portman"],"allocation_proof":"required for effects"},
+                "managed":{"adapter":"explicit configuration","types":["file","directory","postgres","portman_root","script","portman"],"allocation_proof":"required for effects"},
                 "refresh":"edit declarations and register again; orphaned references can be explicitly forgotten"
             },
             "selectors":{"only":"repeat --only RESOURCE_OR_TASK","retain":"repeat --keep RESOURCE"},

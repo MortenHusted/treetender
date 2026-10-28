@@ -2566,3 +2566,137 @@ fn directory_links_and_optional_sources_follow_the_primary_checkout() {
         "skill"
     );
 }
+
+/// A stand-in Portman: the daemon serves services from a JSON file and records
+/// stop requests; the CLI syncs or forgets roots in that file like `up` and
+/// `down --forget --root` do.
+struct FakePortman {
+    socket: PathBuf,
+    state: PathBuf,
+    stops: PathBuf,
+    cli: PathBuf,
+}
+
+impl FakePortman {
+    fn start(f: &Fixture) -> Self {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+        let socket = f.temp.path().join("pm.sock");
+        let state = f.temp.path().join("pm-services.json");
+        let stops = f.temp.path().join("pm-stops");
+        let cli = f.temp.path().join("pm-cli.py");
+        fs::write(
+            &state,
+            r#"[{"name":"other-web","root":"/elsewhere/portman","state":"ready"}]"#,
+        )
+        .unwrap();
+        fs::write(
+            &cli,
+            format!(
+                "import sys,json,os\nstate={state:?}\nargs=sys.argv[1:]\nservices=json.load(open(state))\nif args==['up']:\n root=os.getcwd()\n assert os.path.isfile(os.path.join(root,'portman.local.toml'))\n services=[s for s in services if s['root']!=root]+[{{'name':'lane-web','root':root,'state':'ready'}}]\nelif args[:3]==['down','--forget','--root']:\n services=[s for s in services if s['root']!=args[3]]\nelse:\n sys.exit(9)\njson.dump(services,open(state,'w'))\n",
+                state = state.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (daemon_state, daemon_stops) = (state.clone(), stops.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut len = [0; 4];
+                stream.read_exact(&mut len).unwrap();
+                let mut body = vec![0; u32::from_be_bytes(len) as usize];
+                stream.read_exact(&mut body).unwrap();
+                let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                if request["kind"] == "service_down" {
+                    let mut log = fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&daemon_stops)
+                        .unwrap();
+                    writeln!(log, "{}", request["names"]).unwrap();
+                }
+                let services: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&daemon_state).unwrap()).unwrap();
+                let reply = serde_json::to_vec(
+                    &serde_json::json!({"kind":"service_statuses","services":services}),
+                )
+                .unwrap();
+                stream
+                    .write_all(&(reply.len() as u32).to_be_bytes())
+                    .unwrap();
+                stream.write_all(&reply).unwrap();
+            }
+        });
+        Self {
+            socket,
+            state,
+            stops,
+            cli,
+        }
+    }
+
+    fn roots(&self) -> Vec<String> {
+        let services: Vec<serde_json::Value> =
+            serde_json::from_str(&fs::read_to_string(&self.state).unwrap()).unwrap();
+        services
+            .iter()
+            .map(|s| s["root"].as_str().unwrap().to_owned())
+            .collect()
+    }
+}
+
+#[test]
+fn portman_root_runs_only_the_lanes_own_services() {
+    let f = Fixture::new();
+    let portman = FakePortman::start(&f);
+    fs::write(
+        f.primary.join("portman.lane.toml"),
+        "[service.{workspace_name}-web]\nport = {port:web}\n",
+    )
+    .unwrap();
+    let port = free_port();
+    f.manifest(&format!(
+        "[ports.web]\nrange=[{port}, {port}]\n[[resources]]\nid='services'\nkind='service'\n[resources.adapter]\ntype='portman_root'\nroot='tmp/portman'\nsocket='{}'\ncommand=['{}','{}']\n[[resources]]\nid='services-config'\nkind='file'\ndepends_on=['services']\n[resources.adapter]\ntype='file'\nsource_root='primary'\nsource='portman.lane.toml'\ndestination='tmp/portman/portman.local.toml'\nmode='template'\n",
+        portman.socket.display(),
+        f.python,
+        portman.cli.display()
+    ));
+    let w = f.register();
+    let root = f.lane.join("tmp/portman");
+
+    // Without its config, the root cannot start: the CLI would walk up to an ancestor's.
+    assert!(
+        f.apply(&w, Operation::Prepare, Fixture::only("services"))
+            .success
+    );
+    let result = f.apply(&w, Operation::Start, Selectors::default());
+    assert_eq!(result.failure.unwrap().code, "portman_config");
+
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("portman.local.toml")).unwrap(),
+        format!("[service.lane-web]\nport = {port}\n")
+    );
+    assert!(f.apply(&w, Operation::Start, Selectors::default()).success);
+    // Portman records the physical path its CLI ran in.
+    let physical = f.lane.canonicalize().unwrap().join("tmp/portman");
+    assert!(
+        portman
+            .roots()
+            .contains(&physical.to_string_lossy().into_owned())
+    );
+    assert!(f.apply(&w, Operation::Stop, Selectors::default()).success);
+    assert_eq!(
+        fs::read_to_string(&portman.stops).unwrap(),
+        "[\"lane-web\"]\n"
+    );
+    assert!(root.join("portman.local.toml").exists());
+
+    assert!(f.apply(&w, Operation::Clean, Selectors::default()).success);
+    assert_eq!(portman.roots(), ["/elsewhere/portman"]);
+    assert!(!root.exists());
+}
