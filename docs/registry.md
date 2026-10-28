@@ -9,7 +9,7 @@ TreeTender stores machine state in a private SQLite registry. Portable declarati
 | Primary | The ordinary checkout whose Git directory is the common directory; intrinsically protected |
 | Declaration snapshot | Registered resource uses, including shared/borrowed references that survive checkout disappearance |
 | Allocation claim | Exact provider target, allocating workspace/resource, token, proof, declaration and state |
-| Port reservation | A logical numeric host-port claim retained while stopped; not an OS listener or automatic port allocator |
+| Port reservation | A logical numeric host-port claim retained while stopped: a resource's declared static ports, or a named lease allocated to a workspace from a declared range. Not an OS listener |
 | Operation | Reviewed intent, completed/uncertain steps, failure and recovery provenance |
 | Build outcome | Task definition, declared input fingerprints and resulting artifacts within an operation |
 

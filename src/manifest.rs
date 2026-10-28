@@ -11,6 +11,9 @@ pub struct Manifest {
     pub resources: Vec<Resource>,
     #[serde(default)]
     pub tasks: Vec<Task>,
+    /// Named host ports leased to each workspace from a range.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ports: BTreeMap<String, PortRange>,
 }
 impl Default for Manifest {
     fn default() -> Self {
@@ -18,7 +21,22 @@ impl Default for Manifest {
             version: 1,
             resources: vec![],
             tasks: vec![],
+            ports: BTreeMap::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PortRange {
+    /// Inclusive bounds.
+    pub range: [u16; 2],
+    #[serde(default, skip_serializing_if = "Scope::is_all")]
+    pub scope: Scope,
+}
+impl PortRange {
+    pub fn contains(&self, port: u16) -> bool {
+        (self.range[0]..=self.range[1]).contains(&port)
     }
 }
 
@@ -238,9 +256,11 @@ impl Manifest {
                 result.tasks.retain(|t| t.id != task.id);
                 result.tasks.push(task);
             }
+            result.ports.extend(parsed.ports);
         }
         result.resources.retain(|r| r.scope.applies(primary));
         result.tasks.retain(|t| t.scope.applies(primary));
+        result.ports.retain(|_, p| p.scope.applies(primary));
         result.resources.sort_by(|a, b| a.id.cmp(&b.id));
         result.tasks.sort_by(|a, b| a.id.cmp(&b.id));
         result.validate()?;
@@ -345,6 +365,25 @@ impl Manifest {
                         ));
                     }
                 }
+            }
+        }
+        for (name, port) in &self.ports {
+            if name.is_empty()
+                || name.len() > 32
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-".contains(c))
+            {
+                return Err(Error::new(
+                    "manifest",
+                    format!("port names use up to 32 lowercase letters, digits, - and _: {name}"),
+                ));
+            }
+            if port.range[0] == 0 || port.range[0] > port.range[1] {
+                return Err(Error::new(
+                    "manifest",
+                    format!("port {name} needs a range [low, high] with 0 < low <= high"),
+                ));
             }
         }
         for t in &self.tasks {

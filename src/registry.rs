@@ -158,7 +158,51 @@ impl Guard {
     pub fn workspaces(&self) -> Result<Vec<Workspace>> {
         let mut q = self.db.prepare("SELECT body FROM workspaces ORDER BY id")?;
         let rows = q.query_map([], |r| r.get::<_, String>(0))?;
-        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+        rows.map(|r| {
+            let mut w: Workspace = serde_json::from_str(&r?)?;
+            w.ports = self.leases(&w.id)?;
+            Ok(w)
+        })
+        .collect()
+    }
+    /// A workspace's named port leases. Leases share the ports table with
+    /// resource port claims, so each port has exactly one holder.
+    pub fn leases(&self, workspace: &str) -> Result<std::collections::BTreeMap<String, u16>> {
+        let prefix = format!("lease:{workspace}:");
+        let mut q = self
+            .db
+            .prepare("SELECT target, port FROM ports WHERE substr(target, 1, ?1) = ?2")?;
+        let rows = q.query_map(params![prefix.len() as i64, prefix], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, u16>(1)?))
+        })?;
+        rows.map(|r| {
+            let (target, port) = r?;
+            Ok((target[prefix.len()..].to_owned(), port))
+        })
+        .collect()
+    }
+    pub fn port_taken(&self, port: u16) -> Result<bool> {
+        Ok(self
+            .db
+            .query_row("SELECT 1 FROM ports WHERE port=?", [port], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+    pub fn lease(&self, target: &str, port: u16) -> Result<()> {
+        if self.port_taken(port)? {
+            return Err(Error::new(
+                "port_conflict",
+                format!("port {port} is already held"),
+            ));
+        }
+        self.db
+            .execute("INSERT INTO ports VALUES (?,?)", params![port, target])?;
+        self.bump()
+    }
+    pub fn release(&self, target: &str) -> Result<()> {
+        self.db
+            .execute("DELETE FROM ports WHERE target=?", [target])?;
+        self.bump()
     }
     pub fn resolve(&self, input: &Path) -> Result<Workspace> {
         let text = input.to_string_lossy();

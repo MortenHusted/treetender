@@ -472,6 +472,7 @@ mod tests {
             common_dir: root.join(".git"),
             primary: false,
             name: "lane".into(),
+            ports: Default::default(),
         }
     }
 

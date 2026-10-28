@@ -50,6 +50,9 @@ pub struct Workspace {
     /// from it survive moves. Empty only for records registered before names.
     #[serde(default)]
     pub name: String,
+    /// Port leases by name, read from the registry's port table.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub ports: std::collections::BTreeMap<String, u16>,
 }
 
 impl Workspace {
@@ -68,16 +71,26 @@ impl Workspace {
                 "register this workspace again to assign the name its placeholders need",
             ));
         }
-        Ok(text
+        let mut text = text
             .replace("{workspace_id}", &self.id)
             .replace("{repository_id}", &self.repository_id)
             .replace("{workspace_name}", &self.name)
-            .replace("{workspace_ident}", &self.ident()))
+            .replace("{workspace_ident}", &self.ident());
+        for (name, port) in &self.ports {
+            text = text.replace(&format!("{{port:{name}}}"), &port.to_string());
+        }
+        Ok(text)
     }
 
     /// Lane values exported to tasks and script adapters.
     pub fn environment(&self) -> Vec<(String, String)> {
-        vec![
+        let ports = self.ports.iter().map(|(name, port)| {
+            (
+                format!("TREETENDER_PORT_{}", name.to_uppercase().replace('-', "_")),
+                port.to_string(),
+            )
+        });
+        let mut values = vec![
             ("TREETENDER_WORKSPACE_ID".into(), self.id.clone()),
             ("TREETENDER_WORKSPACE_NAME".into(), self.name.clone()),
             ("TREETENDER_WORKSPACE_IDENT".into(), self.ident()),
@@ -89,7 +102,9 @@ impl Workspace {
                 "TREETENDER_REPOSITORY_ID".into(),
                 self.repository_id.clone(),
             ),
-        ]
+        ];
+        values.extend(ports);
+        values
     }
 }
 

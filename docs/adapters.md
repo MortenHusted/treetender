@@ -25,7 +25,7 @@ capabilities = ["inspect", "prepare", "destroy"]
 timeout_secs = 30
 ```
 
-`{workspace_id}` and `{repository_id}` expand to stable IDs before planning. `{workspace_name}` expands to the workspace's registered name (lowercase letters, digits and hyphens, safe in hostnames) and `{workspace_ident}` to the same name with underscores (safe in database names). Names are fixed at first registration, so these stay stable when a checkout moves. This is string substitution in the target, without shell evaluation. Use workspace placeholders for isolated allocations and shared/borrowed declarations for existing defaults. Resource IDs are selectors within a workspace; targets identify provider allocations across the registry.
+`{workspace_id}` and `{repository_id}` expand to stable IDs before planning. `{workspace_name}` expands to the workspace's registered name (lowercase letters, digits and hyphens, safe in hostnames) and `{workspace_ident}` to the same name with underscores (safe in database names). `{port:NAME}` expands to the workspace's lease for a declared `[ports.NAME]`. Names are fixed at first registration, so these stay stable when a checkout moves. This is string substitution in the target, without shell evaluation. Use workspace placeholders for isolated allocations and shared/borrowed declarations for existing defaults. Resource IDs are selectors within a workspace; targets identify provider allocations across the registry.
 
 Requests have this shape; `workspace` includes `id`, `repository_id`, `path`, `git_dir`, `common_dir` and `primary`:
 
@@ -41,7 +41,7 @@ Requests have this shape; `workspace` includes `id`, `repository_id`, `path`, `g
 }
 ```
 
-Adapter commands and tasks also receive `TREETENDER_WORKSPACE_ID`, `TREETENDER_WORKSPACE_NAME`, `TREETENDER_WORKSPACE_IDENT`, `TREETENDER_WORKSPACE_PATH` and `TREETENDER_REPOSITORY_ID` in their environment; the request's `workspace` object carries the same `name`.
+Adapter commands and tasks also receive `TREETENDER_WORKSPACE_ID`, `TREETENDER_WORKSPACE_NAME`, `TREETENDER_WORKSPACE_IDENT`, `TREETENDER_WORKSPACE_PATH`, `TREETENDER_REPOSITORY_ID` and one `TREETENDER_PORT_<NAME>` per port lease in their environment; the request's `workspace` object carries the same `name`.
 
 Return exactly one JSON response on stdout; send bounded diagnostics to stderr. The response is versioned independently of the manifest:
 
