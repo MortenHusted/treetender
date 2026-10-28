@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-10-28
 
 - Add `unregister`, which drops the record of a linked checkout already removed through Git after a reviewed plan. It releases the workspace's port leases and references, so a checkout created later at the same path takes the name back instead of registering as `NAME-2`. It refuses while the checkout exists or still owns a claim; history stays readable by ID.
 
@@ -22,7 +22,11 @@
 
 - Add owned directory resources for per-lane build and dependency output, proven by an ownership marker and removed descriptor-relatively on clean. A reviewed `adopt --only RESOURCE` claims existing ignored, untracked output; `status --usage` reports allocated bytes.
 
+## 0.2.0 - 2026-10-25
+
 - Add adapter-free passive resource declarations with purpose/manager notes, CLI/TUI accounting and agent discovery. Passive references never allocate, observe or mutate backend resources and remain protective during cleanup.
+
+## 0.1.0 - 2026-10-25
 
 - Initial Rust CLI, TUI and structured agent interface.
 - Central registry for Git identities, resource ownership, protected references and operation history.
