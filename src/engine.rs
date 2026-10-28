@@ -1,6 +1,6 @@
 use crate::adapter;
 use crate::git;
-use crate::manifest::{Adapter, Manifest, SourceRoot, TaskKind};
+use crate::manifest::{Adapter, Manifest, Resource, SourceRoot, TaskKind};
 use crate::model::*;
 use crate::registry::{Guard, Registry};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,6 +33,14 @@ fn proof_matches(proof: &Proof, receipt: &Receipt) -> bool {
         && proof.owner_token.as_deref() == Some(&receipt.owner_token)
         && proof.instance.as_ref().is_some_and(|s| !s.is_empty())
         && (receipt.proof.presence != Presence::Present || proof.instance == receipt.proof.instance)
+}
+
+/// The marker lives inside an owned directory, so an unmarked directory at its path
+/// is not the recorded instance: a tool such as `cargo clean` replaced it.
+fn replaced_directory(resource: &Resource, proof: &Proof) -> bool {
+    matches!(resource.adapter, Some(Adapter::Directory { .. }))
+        && proof.presence == Presence::Present
+        && proof.instance.is_none()
 }
 
 fn missing_external_blocks(receipt: &Receipt, operation: Operation) -> bool {
@@ -883,6 +891,20 @@ impl Engine {
                             "{} exists without a TreeTender ownership marker; if it is disposable, review adopt --only {}",
                             r.id, r.id
                         ));
+                    } else if receipt.is_some() && replaced_directory(r, &proof) {
+                        if operation == Operation::Clean {
+                            plan.steps.push(Step {
+                                id,
+                                action: operation,
+                                target,
+                                destructive: false,
+                            });
+                        } else {
+                            blockers.push(format!(
+                                "{} was recreated without its ownership marker (for example by `cargo clean`); run clean to retire the old receipt, then review adopt --only {}",
+                                r.id, r.id
+                            ));
+                        }
                     } else {
                         blockers.push(format!("{} ownership/instance proof does not match", r.id));
                     }
@@ -1442,6 +1464,15 @@ impl Engine {
             return Err(Error::new(
                 "ownership",
                 "adopt target changed since review or is already claimed",
+            ));
+        }
+        if step.action == Operation::Clean
+            && previously_claimed
+            && replaced_directory(resource, &current)
+        {
+            g.delete_claim(&receipt.target)?;
+            return Ok(Some(
+                "recorded directory was replaced without its ownership marker; retired receipt, directory kept".into(),
             ));
         }
         if current.presence == Presence::Unknown

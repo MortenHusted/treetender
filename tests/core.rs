@@ -2242,6 +2242,59 @@ fn foreign_marker_blocks_directory_cleanup_and_keeps_contents() {
     assert!(f.lane.join("original/.treetender-owner.json").exists());
 }
 
+#[test]
+fn clean_retires_a_directory_rebuilt_without_its_marker_and_keeps_it() {
+    let f = Fixture::new();
+    f.manifest(&directory("cargo-target", "target"));
+    fs::write(f.lane.join(".gitignore"), "/target\n").unwrap();
+    let w = f.register();
+    assert!(
+        f.apply(&w, Operation::Prepare, Selectors::default())
+            .success
+    );
+    // `cargo clean` removes the directory with its marker; the next build recreates it.
+    fs::remove_dir_all(f.lane.join("target")).unwrap();
+    fs::create_dir_all(f.lane.join("target/debug")).unwrap();
+    fs::write(f.lane.join("target/debug/app"), "binary").unwrap();
+    let prepare = f
+        .engine
+        .plan(&w.id, Operation::Prepare, Selectors::default())
+        .unwrap();
+    assert!(
+        prepare
+            .blockers
+            .iter()
+            .any(|b| b.contains("recreated without its ownership marker")),
+        "{:?}",
+        prepare.blockers
+    );
+    let clean = f
+        .engine
+        .plan(&w.id, Operation::Clean, Selectors::default())
+        .unwrap();
+    assert!(clean.blockers.is_empty(), "{:?}", clean.blockers);
+    assert_eq!(clean.steps.len(), 1);
+    assert!(!clean.steps[0].destructive);
+
+    fs::rename(f.lane.join("target"), f.lane.join("reviewed")).unwrap();
+    fs::create_dir(f.lane.join("target")).unwrap();
+    assert_eq!(f.engine.apply(&clean).unwrap_err().code, "stale_plan");
+    fs::remove_dir(f.lane.join("target")).unwrap();
+    fs::rename(f.lane.join("reviewed"), f.lane.join("target")).unwrap();
+
+    assert!(f.engine.apply(&clean).unwrap().success);
+    assert_eq!(
+        fs::read_to_string(f.lane.join("target/debug/app")).unwrap(),
+        "binary"
+    );
+    assert!(f.engine.status(&w.id).unwrap().resources.is_empty());
+    let adopt = f
+        .engine
+        .plan(&w.id, Operation::Adopt, Fixture::only("cargo-target"))
+        .unwrap();
+    assert!(adopt.blockers.is_empty(), "{:?}", adopt.blockers);
+}
+
 fn ids(manifest: &Manifest) -> Vec<&str> {
     manifest.resources.iter().map(|r| r.id.as_str()).collect()
 }

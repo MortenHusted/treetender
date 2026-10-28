@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Clean retires the receipt of an owned directory that a tool such as `cargo clean` recreated without its marker, and keeps the directory. It previously blocked prepare and clean until a reviewed forget.
+
 - `status --usage` counts a hard-linked file once, as `du` does. The docs now state that blocks a tree shares with other lanes through copy-on-write clones or hard links count in full, so the figure can exceed what a clean frees.
 
 - Add Portman lane roots: a lane-owned config directory whose services TreeTender starts with `portman up` in that root, stops by explicit name, and forgets with `down --forget --root` before removing the directory.
