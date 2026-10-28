@@ -19,6 +19,7 @@ fn action(op: Operation) -> &'static str {
         Operation::Stop => "stop",
         Operation::Clean => "destroy",
         Operation::Forget => "forget",
+        Operation::Adopt => "adopt",
     }
 }
 fn matches(selector: &str, id: &str, kind: &str) -> bool {
@@ -253,6 +254,24 @@ impl Engine {
             builds,
         })
     }
+    /// Allocated bytes of present directory resources. Walks whole trees, so
+    /// callers request it explicitly; it never enters plans or proofs.
+    pub fn usage(&self, workspace: &str) -> Result<BTreeMap<String, u64>> {
+        // The walk can be slow; never hold the registry lock during it.
+        let w = self.registry.lock()?.resolve(Path::new(workspace))?;
+        let mut usage = BTreeMap::new();
+        if !git::is_current(&w)? {
+            return Ok(usage);
+        }
+        for r in self.resolved_manifest(&w)?.resources {
+            if let Some(Adapter::Directory { path }) = &r.adapter
+                && let Some(bytes) = crate::directory::usage(&w.path, path)?
+            {
+                usage.insert(r.id.clone(), bytes);
+            }
+        }
+        Ok(usage)
+    }
     pub fn history(&self, workspace: &str) -> Result<Vec<OperationRecord>> {
         let g = self.registry.lock()?;
         let w = g.resolve(Path::new(workspace))?;
@@ -301,6 +320,17 @@ impl Engine {
             return self.plan_forget(g, w, selectors);
         }
         let mut blockers = vec![];
+        if operation == Operation::Adopt {
+            if w.primary {
+                blockers.push("primary workspace resources cannot be adopted".into());
+            }
+            if selectors.only.is_empty() {
+                blockers.push(
+                    "adopt requires explicit --only RESOURCE selection of existing disposable state"
+                        .into(),
+                );
+            }
+        }
         let checkout_current = match git::is_current(&w) {
             Ok(current) => current,
             Err(e) if e.code == "checkout_location_unknown" => {
@@ -446,7 +476,10 @@ impl Engine {
                 wanted.insert(t.id.clone());
             }
         }
-        if !matches!(operation, Operation::Clean | Operation::Stop) {
+        if !matches!(
+            operation,
+            Operation::Clean | Operation::Stop | Operation::Adopt
+        ) {
             loop {
                 let before = wanted.len();
                 for r in &manifest.resources {
@@ -621,6 +654,28 @@ impl Engine {
                     }
                 };
                 plan.observations.insert(id.clone(), proof.clone());
+                if operation == Operation::Adopt {
+                    // Adoption claims existing unmarked state, never a recorded allocation.
+                    let refusal = if receipt.is_some() {
+                        Some("already has an allocation receipt; forget it before adopting".into())
+                    } else if !adapter::supports(r, "adopt") {
+                        Some("lacks adopt capability".into())
+                    } else if proof.presence != Presence::Present || proof.instance.is_some() {
+                        Some("adopt needs existing state without an ownership marker".into())
+                    } else {
+                        adapter::adoptable(&w, r).err().map(|e| e.message)
+                    };
+                    match refusal {
+                        Some(reason) => blockers.push(format!("{} {reason}", r.id)),
+                        None => plan.steps.push(Step {
+                            id,
+                            action: operation,
+                            target,
+                            destructive: false,
+                        }),
+                    }
+                    continue;
+                }
                 if proof.presence == Presence::Missing
                     && matches!(r.adapter, Some(Adapter::Script { .. }))
                     && receipt.is_some_and(|c| missing_external_blocks(c, operation))
@@ -644,7 +699,17 @@ impl Engine {
                 if proof.presence == Presence::Present
                     && receipt.is_none_or(|c| !proof_matches(&proof, c))
                 {
-                    blockers.push(format!("{} ownership/instance proof does not match", r.id));
+                    if receipt.is_none()
+                        && proof.instance.is_none()
+                        && adapter::supports(r, "adopt")
+                    {
+                        blockers.push(format!(
+                            "{} exists without a TreeTender ownership marker; if it is disposable, review adopt --only {}",
+                            r.id, r.id
+                        ));
+                    } else {
+                        blockers.push(format!("{} ownership/instance proof does not match", r.id));
+                    }
                     continue;
                 }
                 if operation == Operation::Prepare && proof.presence == Presence::Present {
@@ -1108,7 +1173,7 @@ impl Engine {
         let previously_claimed = recorded.is_some();
         let mut receipt = match recorded {
             Some(r) => r,
-            None if step.action == Operation::Prepare => Receipt {
+            None if matches!(step.action, Operation::Prepare | Operation::Adopt) => Receipt {
                 resource_id: step.id.clone(),
                 target: step.target.clone(),
                 workspace_id: w.id.clone(),
@@ -1145,8 +1210,20 @@ impl Engine {
             ));
         }
 
+        if step.action == Operation::Adopt
+            && (previously_claimed
+                || current.presence != Presence::Present
+                || current.instance.is_some())
+        {
+            return Err(Error::new(
+                "ownership",
+                "adopt target changed since review or is already claimed",
+            ));
+        }
         if current.presence == Presence::Unknown
-            || (current.presence == Presence::Present && !proof_matches(&current, &receipt))
+            || (step.action != Operation::Adopt
+                && current.presence == Presence::Present
+                && !proof_matches(&current, &receipt))
         {
             return Err(Error::new(
                 "ownership",
@@ -1166,7 +1243,7 @@ impl Engine {
         }
         // Allocation/ownership intent is durable before any external effect.
         receipt.state = match step.action {
-            Operation::Prepare => "preparing",
+            Operation::Prepare | Operation::Adopt => "preparing",
             Operation::Start => "starting",
             Operation::Stop => "stopping",
             Operation::Clean => "destroying",
@@ -1207,7 +1284,9 @@ impl Engine {
                 if proof.presence != Presence::Present
                     || proof.owner_token.as_deref() != Some(&receipt.owner_token)
                     || proof.instance.as_ref().is_none_or(|s| s.is_empty())
-                    || (current.presence == Presence::Present && proof.instance != current.instance)
+                    || (current.presence == Presence::Present
+                        && step.action != Operation::Adopt
+                        && proof.instance != current.instance)
                 {
                     return Err(Error::new(
                         "adapter_proof",

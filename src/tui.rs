@@ -134,7 +134,7 @@ impl App {
     }
 
     fn make_plan(&mut self, operation: Operation, engine: &Engine) -> Result<()> {
-        let only = if operation == Operation::Forget {
+        let only = if matches!(operation, Operation::Forget | Operation::Adopt) {
             self.resources
                 .get(self.cursor)
                 .map(|r| vec![r.resource_id.clone()])
@@ -221,6 +221,7 @@ pub fn run(engine: Engine, workspace: String) -> Result<()> {
             KeyCode::Char('5') => Some(Operation::Stop),
             KeyCode::Char('6') => Some(Operation::Clean),
             KeyCode::Char('7') => Some(Operation::Forget),
+            KeyCode::Char('8') => Some(Operation::Adopt),
             _ => None,
         };
         let result = if let Some(operation) = operation {
@@ -355,7 +356,9 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         middle[1],
     );
     let footer = vec![
-        Line::from("1 prepare  2 build  3 check  4 start  5 stop  6 clean  7 forget selected"),
+        Line::from(
+            "1 prepare  2 build  3 check  4 start  5 stop  6 clean  7 forget selected  8 adopt selected",
+        ),
         Line::from("a apply reviewed plan · r register · g refresh · Esc cancel · q quit"),
         Line::from(app.message.as_str()).style(Style::default().fg(Color::Yellow)),
     ];

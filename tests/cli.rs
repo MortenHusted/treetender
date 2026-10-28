@@ -393,3 +393,29 @@ fn passive_inventory_is_registered_visible_and_detached_without_backends() {
         serde_json::json!([])
     );
 }
+
+#[test]
+fn reviewed_adopt_lets_clean_reclaim_existing_build_output() {
+    let f = Fixture::new();
+    fs::write(
+        f.lane.join(".treetender.local.toml"),
+        "version = 1\n[[resources]]\nid = \"cargo-target\"\nkind = \"file\"\n[resources.adapter]\ntype = \"directory\"\npath = \"target\"\n",
+    )
+    .unwrap();
+    fs::write(f.lane.join(".gitignore"), "/target\n").unwrap();
+    fs::create_dir_all(f.lane.join("target/release")).unwrap();
+    fs::write(f.lane.join("target/release/app"), vec![7u8; 64 * 1024]).unwrap();
+    f.ok(&f.lane, &["register"]);
+    let unreviewed = f.call(&f.lane, &["adopt", "--only", "cargo-target", "--apply"]);
+    assert!(!unreviewed.status.success());
+    assert!(!f.lane.join("target/.treetender-owner.json").exists());
+    f.reviewed(&f.lane, &["adopt", "--only", "cargo-target"]);
+    assert!(f.lane.join("target/.treetender-owner.json").exists());
+    let status = f.ok(&f.lane, &["status", "--usage"]);
+    assert!(status["usage"]["cargo-target"].as_u64().unwrap() >= 64 * 1024);
+    assert_eq!(status["resources"][0]["state"], "prepared");
+    assert!(f.ok(&f.lane, &["status"]).get("usage").is_none());
+    f.reviewed(&f.lane, &["clean", "--only", "cargo-target"]);
+    assert!(!f.lane.join("target").exists());
+    assert!(f.lane.join("README.md").exists());
+}

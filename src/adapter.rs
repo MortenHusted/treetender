@@ -347,6 +347,7 @@ fn proof_at(
 pub(crate) fn target(w: &Workspace, resource: &Resource) -> String {
     match resource.adapter.as_ref() {
         Some(Adapter::File { destination, .. }) => format!("file:{}:{destination}", w.id),
+        Some(Adapter::Directory { path }) => format!("dir:{}:{path}", w.id),
         _ => format!("external:{}", resource.target),
     }
 }
@@ -458,6 +459,20 @@ pub(crate) fn supports(resource: &Resource, action: &str) -> bool {
         Some(Adapter::File { .. }) => ["inspect", "prepare", "destroy"].contains(&action),
         Some(Adapter::Script { capabilities, .. }) => capabilities.iter().any(|c| c == action),
         Some(Adapter::Portman { .. }) => action == "inspect",
+        Some(Adapter::Directory { .. }) => {
+            ["inspect", "prepare", "destroy", "adopt"].contains(&action)
+        }
+    }
+}
+
+/// Read-only checks an adapter requires before existing state may be adopted.
+pub(crate) fn adoptable(w: &Workspace, resource: &Resource) -> Result<()> {
+    match resource.adapter.as_ref() {
+        Some(Adapter::Directory { path }) => crate::directory::adoptable(w, path),
+        _ => Err(Error::new(
+            "capability",
+            "adapter cannot adopt existing state",
+        )),
     }
 }
 
@@ -487,6 +502,13 @@ pub(crate) fn inspect(
                 proof.owner_token = None;
             }
             Ok(proof)
+        }
+        Some(Adapter::Directory { path }) => {
+            if !crate::git::is_current(w)? {
+                return Ok(Proof::missing());
+            }
+            crate::manifest::writable_destination(path)?;
+            crate::directory::proof(&w.path, path, token)
         }
         _ => invoke(w, resource, "inspect", token, receipt, recovery_dir),
     }
@@ -635,6 +657,22 @@ pub(crate) fn invoke(
         Some(Adapter::Portman {
             service, socket, ..
         }) => portman_status(socket, service),
+        Some(Adapter::Directory { path }) => {
+            crate::manifest::writable_destination(path)?;
+            if action != "inspect" && !crate::git::is_current(w)? {
+                return Err(Error::new(
+                    "checkout_unavailable",
+                    "directory effects require the original current checkout",
+                ));
+            }
+            match action {
+                "inspect" => crate::directory::proof(&w.path, path, token),
+                "prepare" => crate::directory::prepare(w, &resource.id, path, token),
+                "adopt" => crate::directory::adopt(w, &resource.id, path, token, receipt),
+                "destroy" => crate::directory::destroy(&w.path, path, token, receipt),
+                _ => Err(Error::new("capability", "directory action unsupported")),
+            }
+        }
     }
 }
 

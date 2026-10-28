@@ -76,6 +76,9 @@ pub enum Adapter {
         service: String,
         socket: String,
     },
+    Directory {
+        path: String,
+    },
 }
 fn timeout() -> u64 {
     30
@@ -277,6 +280,7 @@ impl Manifest {
                         ));
                     }
                 }
+                Some(Adapter::Directory { path }) => writable_destination(path)?,
                 Some(Adapter::Portman {
                     command,
                     service,

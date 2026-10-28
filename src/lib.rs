@@ -2,6 +2,7 @@
 //! External adapters and tasks execute trusted code with the caller's privileges.
 pub mod adapter;
 pub mod build;
+mod directory;
 pub mod engine;
 pub mod git;
 pub mod manifest;

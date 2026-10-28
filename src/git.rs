@@ -47,6 +47,31 @@ fn git(path: &Path, args: &[&str]) -> Result<String> {
         .map(|s| s.trim_end_matches('\n').to_owned())
         .map_err(|e| Error::new("git", e.to_string()))
 }
+/// Whether Git tracks anything at or below this checkout-relative path.
+pub(crate) fn tracked(root: &Path, path: &str) -> Result<bool> {
+    Ok(!git(root, &["--literal-pathspecs", "ls-files", "-z", "--", path])?.is_empty())
+}
+
+/// Whether Git ignores this checkout-relative directory. The `./` prefix keeps
+/// a name starting with `:` from being read as pathspec magic.
+pub(crate) fn ignored(root: &Path, path: &str) -> Result<bool> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(root)
+        .args(["check-ignore", "-q", "--"])
+        .arg(format!("./{path}/"));
+    clean_environment(&mut command);
+    match command.output()?.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(Error::new(
+            "git",
+            format!("cannot determine whether {path} is ignored"),
+        )),
+    }
+}
+
 pub fn discover(path: &Path) -> Result<Discovery> {
     if git(path, &["rev-parse", "--is-bare-repository"])? == "true" {
         return Err(bare_layout());

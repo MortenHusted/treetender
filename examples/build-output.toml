@@ -1,0 +1,24 @@
+# Per-lane build and dependency output that clean can reclaim.
+# Keep the directories ignored by Git. Shared caches (a common
+# CARGO_TARGET_DIR, sccache) belong in shared/borrowed declarations instead.
+version = 1
+
+[[resources]]
+id = "cargo-target"
+kind = "file"
+description = "This lane's private Cargo target directory"
+[resources.adapter]
+type = "directory"
+path = "target"
+
+[[resources]]
+id = "node-modules"
+kind = "file"
+[resources.adapter]
+type = "directory"
+path = "web/node_modules"
+
+# New lanes: prepare creates each directory with an ownership marker.
+# Existing output: plan adopt --only cargo-target --out adopt.json, review, apply.
+# Reclaim: plan clean --only cargo-target --out clean.json, review, apply.
+# status --usage shows allocated bytes per directory.
