@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- File resources gain `mode = "template"`, which renders workspace placeholders and port leases into a private copy, link to directories as well as files, and take `optional = true` to skip an absent source.
+
 - Lease named host ports to each workspace from a declared `[ports.NAME] range`. Leases are stable per lane, skip ports held by other workspaces or occupied by listeners, survive stop and clean, and are released by removing the declaration or `forget --only port:NAME`. Use them as `{port:NAME}` and `TREETENDER_PORT_NAME`.
 
 - Linked checkouts inherit the primary checkout's private `.treetender.local.toml`, between their own two manifests. Declarations and tasks take `scope = "linked" | "primary"` to apply to one side only.
