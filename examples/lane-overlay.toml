@@ -1,0 +1,80 @@
+# A primary checkout's private .treetender.local.toml that prepares every
+# linked lane of a web application. Nothing here is tracked by the team's
+# repository; lanes inherit it. `scope = "linked"` keeps the primary's own
+# configuration and data out of lane preparation and cleanup.
+version = 1
+
+[ports.web]
+range = [3900, 4099]
+scope = "linked"
+
+# Agent context and private settings, linked from the primary when present.
+[[resources]]
+id = "agent-instructions"
+kind = "agent"
+scope = "linked"
+[resources.adapter]
+type = "file"
+source_root = "primary"
+source = "AGENTS.local.md"
+destination = "AGENTS.local.md"
+mode = "link"
+optional = true
+
+[[resources]]
+id = "agent-skills"
+kind = "agent"
+scope = "linked"
+[resources.adapter]
+type = "file"
+source_root = "primary"
+source = ".claude/skills"
+destination = ".claude/skills"
+mode = "link"
+optional = true
+
+[[resources]]
+id = "env"
+kind = "file"
+scope = "linked"
+[resources.adapter]
+type = "file"
+source_root = "primary"
+source = ".env"
+destination = ".env"
+mode = "link"
+optional = true
+
+# Lane configuration rendered from private templates kept in the primary.
+# database.yml.template might say: database: app_development_{workspace_ident}
+[[resources]]
+id = "database-config"
+kind = "file"
+scope = "linked"
+[resources.adapter]
+type = "file"
+source_root = "primary"
+source = "config/database.yml.template"
+destination = "config/database.yml"
+mode = "template"
+
+# A process manager's config with: host = "{workspace_name}.app.test", port = {port:web}
+[[resources]]
+id = "services-config"
+kind = "file"
+scope = "linked"
+[resources.adapter]
+type = "file"
+source_root = "primary"
+source = "services.lane.template.toml"
+destination = "services.local.toml"
+mode = "template"
+
+# Per-lane build output that clean can reclaim.
+[[resources]]
+id = "node-modules"
+kind = "file"
+scope = "linked"
+[resources.adapter]
+type = "directory"
+path = "node_modules"

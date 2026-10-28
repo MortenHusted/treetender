@@ -945,6 +945,8 @@ impl Engine {
                     && let Some(Adapter::File {
                         source,
                         source_root,
+                        mode,
+                        optional,
                         ..
                     }) = &r.adapter
                 {
@@ -952,10 +954,18 @@ impl Engine {
                         SourceRoot::Workspace => w.path.clone(),
                         SourceRoot::Primary => git::discover(&w.path)?.primary_path,
                     };
-                    match adapter::file_snapshot(&source_path, source) {
-                        Ok(hash) => {
+                    match adapter::source_material(&w, &source_path, source, *mode) {
+                        Ok(Some(hash)) => {
                             material.insert(format!("source:{id}:{}", source_path.display()), hash);
                         }
+                        Ok(None) if *optional => {
+                            plan.exclusions.push(Exclusion {
+                                id,
+                                reason: "optional source is absent".into(),
+                            });
+                            continue;
+                        }
+                        Ok(None) => blockers.push(format!("{id} source {source} is missing")),
                         Err(e) => blockers.push(format!("{id} source unavailable: {e}")),
                     }
                 }
